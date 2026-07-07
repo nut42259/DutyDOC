@@ -13,7 +13,10 @@ import {
   getQueueState, setQueueState,
 } from './storage';
 import LoginScreen from './LoginScreen';
-import MasterScheduleGenerator from './MasterScheduleGenerator';
+import MasterScheduleGenerator, {
+  DEFAULT_WDQ_NAMES, DEFAULT_H12Q_NAMES, DEFAULT_H3Q_NAMES,
+  resolveQueue, detectGroups, ltFor, lastNextInLoop,
+} from './MasterScheduleGenerator';
 
 /* ---------------------------------- constants ---------------------------------- */
 
@@ -444,6 +447,71 @@ function UsageTable({ title, doctors, usage, original }) {
         </tbody>
       </table>
       {original && <p className="text-[10px] text-slate-400 mt-1">ตัวเลขในวงเล็บ = จำนวนเดิมก่อนมีการขาย/แลกเวร · สีส้ม = มีการเปลี่ยนแปลงจากเดิม</p>}
+    </div>
+  );
+}
+
+/* ---------------------------------- master schedule queue summary ---------------------------------- */
+
+const QUEUE_LOOP_LABELS = { weekday: 'วันธรรมดา', h12: 'วันหยุด 1-2 วัน', h3: 'วันหยุด 3 วัน', h4: 'วันหยุด 4 วัน', h5: 'วันหยุด 5 วัน' };
+
+function MasterMonthSummary({ year, month, doctors, masterSchedule, holidays, queueState }) {
+  const WDQ = resolveQueue(queueState.WDQ ?? DEFAULT_WDQ_NAMES, doctors);
+  const H12Q = resolveQueue(queueState.H12Q ?? DEFAULT_H12Q_NAMES, doctors);
+  const H3Q = resolveQueue(queueState.H3Q ?? DEFAULT_H3Q_NAMES, doctors);
+  const qMap = { weekday: WDQ, h12: H12Q, h3: H3Q, h4: H3Q, h5: H3Q };
+
+  const groups = detectGroups(year, month, holidays);
+  const groupDateSet = new Set(groups.flat());
+  const datesByType = { weekday: [], h12: [], h3: [], h4: [], h5: [] };
+  const total = daysInMonth(year, month);
+  for (let d = 1; d <= total; d++) {
+    const date = isoDate(year, month, d);
+    if (!groupDateSet.has(date)) datesByType.weekday.push(date);
+  }
+  groups.forEach(g => { datesByType[ltFor(g.length)].push(...g); });
+
+  const rows = ['weekday', 'h12', 'h3', 'h4', 'h5'].map(key => {
+    const queue = qMap[key];
+    const info = lastNextInLoop(queue, queueState[key] ?? 0);
+    const nextName = info ? (doctors.find(d => d.id === info.nextId)?.name ?? '?') : '?';
+    const nextLabel = info?.nextHasDup ? `${nextName}${info.nextOcc}` : nextName;
+    const datesThisMonth = datesByType[key].filter(d => masterSchedule[d]).sort();
+    const storedLastDate = queueState.lastDate?.[key];
+
+    if (datesThisMonth.length > 0) {
+      const firstDoc = doctors.find(d => d.id === masterSchedule[datesThisMonth[0]])?.name ?? '?';
+      const lastDoc = doctors.find(d => d.id === masterSchedule[datesThisMonth[datesThisMonth.length - 1]])?.name ?? '?';
+      // Only trust the "next" prediction if the queue hasn't already moved
+      // past this month for this loop (i.e. this month IS the most recent
+      // one generated for it) — otherwise a later month already consumed it.
+      const isCurrent = storedLastDate === datesThisMonth[datesThisMonth.length - 1];
+      return { key, hasData: true, firstDoc, lastDoc, nextLabel, isCurrent };
+    }
+    const lastName = info ? (doctors.find(d => d.id === info.lastId)?.name ?? '?') : '?';
+    const lastLabel = info?.lastHasDup ? `${lastName}${info.lastOcc}` : lastName;
+    return { key, hasData: false, lastDateStr: storedLastDate, lastLabel, nextLabel };
+  });
+
+  return (
+    <div className="mt-4 border border-slate-200 rounded-xl px-3 py-2.5">
+      <p className="text-xs font-medium text-slate-700 mb-2">สรุปคิวเดือนนี้</p>
+      <div className="space-y-1.5">
+        {rows.map(r => (
+          <p key={r.key} className="text-[11px] text-slate-600">
+            <span className="font-medium text-slate-700">{QUEUE_LOOP_LABELS[r.key]}</span>{' '}
+            {r.hasData ? (
+              <>เริ่มที่ <b>{r.firstDoc}</b> จบที่ <b>{r.lastDoc}</b>{' '}
+                {r.isCurrent ? <>เดือนต่อไปเริ่มที่ <b>{r.nextLabel}</b></> : <span className="text-slate-400">(คิวเดินต่อไปหลังจากเดือนนี้แล้ว)</span>}
+              </>
+            ) : (
+              <>ล่าสุด{r.lastDateStr ? ` ${formatDisplayDate(r.lastDateStr)}` : ''} จบที่ <b>{r.lastLabel}</b> ดังนั้นเวรต่อไปเริ่มที่ <b>{r.nextLabel}</b>{' '}
+                <span className="text-slate-400">(ไม่มีวันประเภทนี้ในเดือนนี้ จึงเป็นข้อมูลเก่า)</span>
+              </>
+            )}
+          </p>
+        ))}
+      </div>
     </div>
   );
 }
@@ -954,6 +1022,25 @@ export default function App() {
     showToast('ล้างตารางเวรปัจจุบันแล้ว');
   };
 
+  // Wipe the master schedule (and everything derived from it — overrides,
+  // current schedule) back to blank for this month. Unlike a re-upload, this
+  // leaves the doctor roster untouched.
+  const resetMasterSchedule = async () => {
+    setMasterSchedule({});
+    setMasterOriginal({});
+    setScheduleOverrides({});
+    setCurrentSchedule({});
+    setCurrentScheduleGenerated(false);
+    setScheduleViolations([]);
+    setScheduleStale(false);
+    await saveMonth({ masterSchedule: {}, masterOriginal: {}, scheduleOverrides: {}, currentSchedule: {}, currentScheduleGenerated: false, scheduleViolations: [], scheduleStale: false });
+    await addNotification(
+      `ล้างตารางเวรต้นแบบของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว`,
+      `🗑️ ล้างตารางเวรต้นแบบของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว`
+    );
+    showToast('ล้างตารางเวรต้นแบบแล้ว');
+  };
+
   /* ---------- unavailability ---------- */
 
   const toggleUnavailable = (date) => {
@@ -1001,6 +1088,17 @@ export default function App() {
     }
     return dates;
   };
+
+  // Which of this month's unavailable dates came from a standing recurring
+  // rule vs. a one-off manual click — used to give recurring dates a visually
+  // distinct color in the calendar so it's clear which is which.
+  const recurringDatesByDoctor = {};
+  ((queueState || {}).recurringRules || []).forEach(({ docId, dow, occurrences }) => {
+    const dates = recurringDatesForMonth(year, month, dow, occurrences);
+    if (!recurringDatesByDoctor[docId]) recurringDatesByDoctor[docId] = new Set();
+    dates.forEach(d => recurringDatesByDoctor[docId].add(d));
+  });
+  const isRecurringUnavailable = (docId, date) => recurringDatesByDoctor[docId]?.has(date) ?? false;
 
   // Apply recurring pattern to current month AND save rule for all future months
 
@@ -1417,6 +1515,14 @@ export default function App() {
                     <Upload size={14} className="text-teal-600" /> อัปโหลด .xlsx
                     <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleScheduleExcelUpload} />
                   </label>
+                  {hasMasterData && (
+                    <button
+                      onClick={() => setConfirmState({ type: 'clear-master' })}
+                      className="flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg transition-colors"
+                    >
+                      <RotateCcw size={14} /> ล้างตารางเวรต้นแบบ
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -1435,6 +1541,9 @@ export default function App() {
                 />
                 <p className="text-xs text-slate-400 mt-3 flex items-center gap-1"><Info size={12} /> ชื่อสีเทาขีดฆ่า = เจ้าของเวรเดิมก่อนขายเวร (ไม่ปรากฏสำหรับการแลกเวร) · ชื่อด้านบน = เจ้าของเวรปัจจุบัน</p>
                 <UsageTable title="จำนวนเวรที่จัดแล้วเดือนนี้ (ปัจจุบัน(เดิมก่อนขายเวร))" doctors={activeDoctors} usage={masterUsage} original={masterOriginalUsage} />
+                {role === 'admin' && hasMasterData && queueState && (
+                  <MasterMonthSummary year={year} month={month} doctors={doctors} masterSchedule={masterSchedule} holidays={holidays} queueState={queueState} />
+                )}
               </>
             )}
           </div>
@@ -1524,7 +1633,7 @@ export default function App() {
                   onApply={(dow, occ) => applyRecurringUnavailable(currentDoctorId, dow, occ)}
                 />
                 <div className="flex items-center justify-between mb-4"><MonthNav year={year} month={month} onShift={shiftMonth} /></div>
-                <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> คลิกวันที่เพื่อแจ้ง/ยกเลิกการแจ้งไม่สะดวก ({getDoctor(currentDoctorId)?.name})</p>
+                <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> คลิกวันที่เพื่อแจ้ง/ยกเลิกการแจ้งไม่สะดวก ({getDoctor(currentDoctorId)?.name}) · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-indigo-50 border border-indigo-300" /> ไม่สะดวกประจำ (จาก rule) · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-50 border border-red-300" /> จิ้มเลือกเอง</p>
                 <div className="grid grid-cols-7 gap-1 mb-1">{WEEKDAY_LABELS.map((w, i) => <div key={w} className={`text-center text-xs font-body font-semibold py-1 ${i === 0 || i === 6 ? 'text-rose-500' : 'text-slate-400'}`}>{w}</div>)}</div>
                 <div className="grid grid-cols-7 gap-1">
                   {(() => {
@@ -1536,13 +1645,14 @@ export default function App() {
                     return cells.map((date, i) => {
                       if (!date) return <div key={`b-${i}`} />;
                       const marked = (unavailability[currentDoctorId] || []).includes(date);
+                      const recurring = marked && isRecurringUnavailable(currentDoctorId, date);
                       const onDuty = effectiveSchedule[date] === currentDoctorId;
                       const type = dayType(date, holidaySet);
                       return (
-                        <button key={date} onClick={() => toggleUnavailable(date)} className={`rounded-lg border p-2 min-h-[56px] text-left transition-colors ${marked ? 'bg-red-50 border-red-300' : type === 'holiday' ? 'bg-rose-100 border-rose-200 hover:border-teal-300' : 'bg-white border-slate-200 hover:border-teal-300'} ${onDuty ? 'ring-2 ring-offset-1 ring-teal-500' : ''}`}>
+                        <button key={date} onClick={() => toggleUnavailable(date)} className={`rounded-lg border p-2 min-h-[56px] text-left transition-colors ${recurring ? 'bg-indigo-50 border-indigo-300' : marked ? 'bg-red-50 border-red-300' : type === 'holiday' ? 'bg-rose-100 border-rose-200 hover:border-teal-300' : 'bg-white border-slate-200 hover:border-teal-300'} ${onDuty ? 'ring-2 ring-offset-1 ring-teal-500' : ''}`}>
                           <div className="font-mono text-[11px] text-slate-500">{Number(date.slice(-2))}</div>
                           {onDuty && <div className="text-[9px] text-teal-600 font-medium mt-0.5">อยู่เวร</div>}
-                          {marked && <div className="text-[10px] text-red-500 font-medium mt-0.5">ไม่สะดวก</div>}
+                          {marked && <div className={`text-[10px] font-medium mt-0.5 ${recurring ? 'text-indigo-500' : 'text-red-500'}`}>{recurring ? 'ไม่สะดวกประจำ' : 'ไม่สะดวก'}</div>}
                         </button>
                       );
                     });
@@ -1583,6 +1693,7 @@ export default function App() {
                 unavailability={unavailability} effectiveSchedule={effectiveSchedule}
                 holidaySet={holidaySet} masterSchedule={masterSchedule} defaultDocId={currentDoctorId}
                 unavailabilityConfirmed={unavailabilityConfirmed} onToggleConfirmed={toggleUnavailabilityConfirmed}
+                isRecurringUnavailable={isRecurringUnavailable}
                 onToggle={(docId, date) => {
                   setUnavailability(prev => {
                     const mine = prev[docId] || [];
@@ -1609,7 +1720,7 @@ export default function App() {
             marketplace={marketplace} myAssignedDates={myAssignedDates} holidaySet={holidaySet}
             currentScheduleGenerated={currentScheduleGenerated}
             unavailability={unavailability} effectiveSchedule={effectiveSchedule}
-            year={year} month={month} onShiftMonth={shiftMonth}
+            year={year} month={month} onShiftMonth={shiftMonth} showToast={showToast}
             createPost={createPost} createBulkSell={createBulkSell} cancelPost={cancelPost} declinePost={declinePost} acceptPost={acceptPost}
           />
         )}
@@ -1657,6 +1768,16 @@ export default function App() {
         danger
         onCancel={() => setConfirmState(null)}
         onConfirm={() => { setConfirmState(null); resetCurrentSchedule(); }}
+      />
+
+      <ConfirmModal
+        open={confirmState?.type === 'clear-master'}
+        title="ล้างตารางเวรต้นแบบ?"
+        body={`ตารางเวรต้นแบบทั้งหมดของเดือน ${THAI_MONTHS[month]} ${year + 543} จะถูกล้าง (รวมถึงตารางเวรปัจจุบันที่คำนวณจากมันด้วย) รายชื่อแพทย์และวันไม่สะดวกที่แจ้งไว้จะไม่หายไป — ใช้เมื่อต้องการเริ่มจัดตารางต้นแบบใหม่ทั้งหมดสำหรับเดือนนี้`}
+        confirmLabel="ล้างตาราง"
+        danger
+        onCancel={() => setConfirmState(null)}
+        onConfirm={() => { setConfirmState(null); resetMasterSchedule(); }}
       />
 
       {showMasterGen && queueState && (
@@ -1724,7 +1845,7 @@ function SwapCalendar({ year, month, candidateDates, selected, holidaySet, getDo
   );
 }
 
-function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace, myAssignedDates, holidaySet, currentScheduleGenerated, unavailability, effectiveSchedule, year, month, onShiftMonth, createPost, createBulkSell, cancelPost, declinePost, acceptPost }) {
+function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace, myAssignedDates, holidaySet, currentScheduleGenerated, unavailability, effectiveSchedule, year, month, onShiftMonth, showToast, createPost, createBulkSell, cancelPost, declinePost, acceptPost }) {
   // The month nav here drives the SAME global year/month as every other tab
   // (not a separate local picker) — so "my shifts this month" and swap
   // candidates always come from whichever month is actually loaded, with no
@@ -1737,12 +1858,24 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
   const [swapRequestedDate, setSwapRequestedDate] = useState('');
   const [swapSelfAdjacentConfirmed, setSwapSelfAdjacentConfirmed] = useState(false);
   const [acceptTarget, setAcceptTarget] = useState(null);
+  const [buyAllConfirm, setBuyAllConfirm] = useState(false);
 
   const myDates = currentDoctorId ? myAssignedDates(currentDoctorId) : [];
   const otherDoctors = doctors.filter(d => d.id !== currentDoctorId);
   const sellPosts = marketplace.filter(p => p.type === 'sell' && p.status === 'open');
   const swapPosts = marketplace.filter(p => p.type === 'swap' && p.status === 'open');
   const history = marketplace.filter(p => p.status !== 'open').slice(0, 8);
+
+  // "ซื้อทุกเวร" only targets posts for the CURRENTLY LOADED month — acceptPost
+  // refuses posts from any other month (to avoid writing into the wrong
+  // month's data), so bulk-buying across months would just fail silently.
+  const monthPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
+  const buyableSellPosts = sellPosts.filter(p =>
+    p.date.startsWith(monthPrefix) && p.posterId !== currentDoctorId && (!p.targetDoctorId || p.targetDoctorId === currentDoctorId)
+  );
+  const buyAllSellPosts = () => {
+    buyableSellPosts.forEach(p => acceptPost(p));
+  };
 
   const submitSell = () => {
     if (!sellDate) return;
@@ -1816,7 +1949,14 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
       )}
 
       <div className="border border-teal-200 rounded-2xl p-4 bg-teal-50/30">
-        <div className="flex items-center gap-2 mb-3"><Tag size={16} className="text-teal-600" /><p className="font-display font-semibold text-slate-800">ขายเวร</p></div>
+        <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+          <div className="flex items-center gap-2"><Tag size={16} className="text-teal-600" /><p className="font-display font-semibold text-slate-800">ขายเวร</p></div>
+          {buyableSellPosts.length > 0 && (
+            <button onClick={() => setBuyAllConfirm(true)} className="flex items-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
+              <Check size={13} /> ซื้อทุกเวร ({buyableSellPosts.length})
+            </button>
+          )}
+        </div>
 
         {(role === 'doctor' || role === 'admin') && (
           myDates.length === 0 ? <p className="text-sm text-slate-400 mb-2">คุณยังไม่มีเวรที่จัดไว้ในเดือนนี้</p> : (
@@ -1980,6 +2120,15 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
         onCancel={() => setAcceptTarget(null)}
         onConfirm={() => { acceptPost(acceptTarget); setAcceptTarget(null); }}
       />
+
+      <ConfirmModal
+        open={buyAllConfirm}
+        title="ซื้อทุกเวรที่เปิดอยู่?"
+        body={`คุณจะรับเวรทั้งหมด ${buyableSellPosts.length} วันที่เปิดขายอยู่ในเดือนนี้ (${buyableSellPosts.map(p => formatDisplayDate(p.date)).join(', ')}) — ตารางเวรต้นแบบและโควตาจะอัปเดตทันทีสำหรับทุกวัน`}
+        confirmLabel="ซื้อทั้งหมด"
+        onCancel={() => setBuyAllConfirm(false)}
+        onConfirm={() => { buyAllSellPosts(); setBuyAllConfirm(false); showToast(`ซื้อเวรสำเร็จ ${buyableSellPosts.length} รายการ`); }}
+      />
     </div>
   );
 }
@@ -2065,7 +2214,7 @@ function RecurringUnavailablePanel({ year, month, onApply }) {
   );
 }
 
-function AdminUnavailablePanel({ year, month, doctors, allDoctors, unavailability, effectiveSchedule, holidaySet, masterSchedule, defaultDocId, unavailabilityConfirmed, onToggleConfirmed, onToggle, onApplyRecurring, onClearMonth }) {
+function AdminUnavailablePanel({ year, month, doctors, allDoctors, unavailability, effectiveSchedule, holidaySet, masterSchedule, defaultDocId, unavailabilityConfirmed, onToggleConfirmed, isRecurringUnavailable, onToggle, onApplyRecurring, onClearMonth }) {
   // Default to the logged-in admin's own entry (falling back to the first
   // doctor in the roster if they're not in this month's active list) so
   // admin doesn't have to re-select themselves every time.
@@ -2107,7 +2256,7 @@ function AdminUnavailablePanel({ year, month, doctors, allDoctors, unavailabilit
         const markedDates = unavailability[selectedDocId] || [];
         return (
           <>
-            <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> คลิกวันที่เพื่อเพิ่ม/ลบวันไม่สะดวกของ {doc?.name}</p>
+            <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> คลิกวันที่เพื่อเพิ่ม/ลบวันไม่สะดวกของ {doc?.name} · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-violet-50 border border-violet-300" /> ไม่สะดวกประจำ (จาก rule) · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-50 border border-red-300" /> จิ้มเลือกเอง</p>
             <RecurringUnavailablePanel
               year={year} month={month}
               onApply={(dow, occ) => onApplyRecurring(selectedDocId, dow, occ)}
@@ -2119,17 +2268,18 @@ function AdminUnavailablePanel({ year, month, doctors, allDoctors, unavailabilit
               {cells.map((date, i) => {
                 if (!date) return <div key={`b-${i}`} />;
                 const marked = markedDates.includes(date);
+                const recurring = marked && isRecurringUnavailable(selectedDocId, date);
                 const onDuty = effectiveSchedule[date] === selectedDocId;
                 const inMaster = masterSchedule[date] === selectedDocId;
                 const type = dayType(date, holidaySet);
                 return (
                   <button key={date} onClick={() => onToggle(selectedDocId, date)}
                     className={`rounded-lg border p-2 min-h-[56px] text-left transition-colors
-                      ${marked ? 'bg-red-50 border-red-300' : type === 'holiday' ? 'bg-rose-100 border-rose-200 hover:border-teal-300' : 'bg-white border-slate-200 hover:border-teal-300'}`}>
+                      ${recurring ? 'bg-indigo-50 border-indigo-300' : marked ? 'bg-red-50 border-red-300' : type === 'holiday' ? 'bg-rose-100 border-rose-200 hover:border-teal-300' : 'bg-white border-slate-200 hover:border-teal-300'}`}>
                     <div className="font-mono text-[11px] text-slate-500">{Number(date.slice(-2))}</div>
-                    {inMaster && <div className="text-[9px] text-indigo-500 font-medium">ต้นแบบ</div>}
+                    {inMaster && <div className="text-[9px] text-sky-600 font-medium">ต้นแบบ</div>}
                     {onDuty && <div className="text-[9px] text-teal-600 font-medium">อยู่เวร</div>}
-                    {marked && <div className="text-[10px] text-red-500 font-medium">ไม่สะดวก</div>}
+                    {marked && <div className={`text-[10px] font-medium ${recurring ? 'text-indigo-500' : 'text-red-500'}`}>{recurring ? 'ไม่สะดวกประจำ' : 'ไม่สะดวก'}</div>}
                   </button>
                 );
               })}

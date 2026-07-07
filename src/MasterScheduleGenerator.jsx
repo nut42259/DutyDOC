@@ -20,9 +20,9 @@ import { isoDate, dayType, daysInMonth, formatDisplayDate } from './dateUtils';
 
 // ─── Queue definitions ────────────────────────────────────────────────────────
 // Default loop order (by doctor NAME, resolved to id at runtime)
-const DEFAULT_WDQ_NAMES  = ['อารีรัตน์','ชุติมา','กนกอร','ธัญลักษณ์','วัทนี','ธนวรรณ','ณัชพล','สมิตา','พสิษฐา','ณัฐธิดา','ขนิษฐา','ณัฐพล'];
-const DEFAULT_H12Q_NAMES = ['พสิษฐา','ชุติมา','ณัชพล','ณัฐพล','กนกอร','ธัญลักษณ์','ณัฐธิดา','ขนิษฐา','ธนวรรณ','ณัชพล','ณัฐพล','วัทนี','สมิตา','ณัฐธิดา','ขนิษฐา'];
-const DEFAULT_H3Q_NAMES  = ['ชุติมา','กนกอร','ธัญลักษณ์','วัทนี','ธนวรรณ','ณัชพล','สมิตา','พสิษฐา','ณัฐธิดา','ขนิษฐา','ณัฐพล'];
+export const DEFAULT_WDQ_NAMES  = ['อารีรัตน์','ชุติมา','กนกอร','ธัญลักษณ์','วัทนี','ธนวรรณ','ณัชพล','สมิตา','พสิษฐา','ณัฐธิดา','ขนิษฐา','ณัฐพล'];
+export const DEFAULT_H12Q_NAMES = ['พสิษฐา','ชุติมา','ณัชพล','ณัฐพล','กนกอร','ธัญลักษณ์','ณัฐธิดา','ขนิษฐา','ธนวรรณ','ณัชพล','ณัฐพล','วัทนี','สมิตา','ณัฐธิดา','ขนิษฐา'];
+export const DEFAULT_H3Q_NAMES  = ['ชุติมา','กนกอร','ธัญลักษณ์','วัทนี','ธนวรรณ','ณัชพล','สมิตา','พสิษฐา','ณัฐธิดา','ขนิษฐา','ณัฐพล'];
 
 const THAI_MONTHS = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
 const WEEKDAY_LABELS = ['อา','จ','อ','พ','พฤ','ศ','ส'];
@@ -35,9 +35,9 @@ const LOOP_META = {
   h5:      { label: 'วันหยุด 5+ วัน',  bg: '#ede9fe', tx: '#4c1d95' },
 };
 
-function ltFor(n) { return n <= 2 ? 'h12' : n === 3 ? 'h3' : n === 4 ? 'h4' : 'h5'; }
+export function ltFor(n) { return n <= 2 ? 'h12' : n === 3 ? 'h3' : n === 4 ? 'h4' : 'h5'; }
 
-function detectGroups(year, month, holidayDates) {
+export function detectGroups(year, month, holidayDates) {
   const n = daysInMonth(year, month);
   const holSet = new Set(holidayDates);
   const groups = [];
@@ -53,11 +53,28 @@ function detectGroups(year, month, holidayDates) {
 }
 
 // Build id arrays from name arrays (duplicate names produce duplicate ids — correct for H12Q)
-function resolveQueue(nameArr, doctors) {
+export function resolveQueue(nameArr, doctors) {
   return nameArr.map(name => {
     const doc = doctors.find(d => d.name.trim() === name.trim());
     return doc?.id ?? null;
   }).filter(Boolean);
+}
+
+// Given a resolved queue array and its "next" pointer, derive who finished
+// last and who's up next — plus, for doctors who appear more than once in
+// the loop (e.g. ขนิษฐา twice in H12Q), which occurrence (1st/2nd/...) this
+// specific slot is, since "ขนิษฐา" alone is ambiguous in those loops.
+export function lastNextInLoop(queue, ptr) {
+  const len = queue.length;
+  if (len === 0) return null;
+  const nextIdx = ((ptr % len) + len) % len;
+  const lastIdx = (nextIdx - 1 + len) % len;
+  const occurrenceCount = (id) => queue.filter(x => x === id).length;
+  const occurrenceAt = (idx) => queue.slice(0, idx + 1).filter(x => x === queue[idx]).length;
+  return {
+    lastId: queue[lastIdx], lastOcc: occurrenceAt(lastIdx), lastHasDup: occurrenceCount(queue[lastIdx]) > 1,
+    nextId: queue[nextIdx], nextOcc: occurrenceAt(nextIdx), nextHasDup: occurrenceCount(queue[nextIdx]) > 1,
+  };
 }
 
 function runQueue(queue, lt, ptr, date, avail, debt) {
@@ -108,6 +125,9 @@ function generateSchedule({ year, month, holidayDates, avail, WDQ, H12Q, H3Q, qp
   let { weekday: w, h12, h3, h4, h5 } = { ...qp };
   const schedule = {};
   const groupInfos = [];
+  // Last actual (non-null) assigned date per loop type, in this generation —
+  // only set when the type had at least one real assignment this month.
+  const newLastDate = {};
 
   groups.forEach(g => {
     const lt = ltFor(g.length);
@@ -120,10 +140,11 @@ function generateSchedule({ year, month, holidayDates, avail, WDQ, H12Q, H3Q, qp
       if (priorityId) {
         schedule[date] = priorityId;
         assigns.push({ date, id: priorityId });
+        newLastDate[lt] = date;
       } else {
         const r = runQueue(q, lt, ptr, date, avail, debtCopy);
         ptr = r.p;
-        if (r.id) schedule[date] = r.id;
+        if (r.id) { schedule[date] = r.id; newLastDate[lt] = date; }
         assigns.push({ date, id: r.id });
       }
     });
@@ -140,12 +161,12 @@ function generateSchedule({ year, month, holidayDates, avail, WDQ, H12Q, H3Q, qp
     if (holSet.has(date)) continue;
     const r = runQueue(WDQ, 'weekday', w, date, avail, debtCopy);
     w = r.p;
-    if (r.id) schedule[date] = r.id;
+    if (r.id) { schedule[date] = r.id; newLastDate.weekday = date; }
     wdAssigns.push({ date, id: r.id });
   }
   groupInfos.unshift({ dates: wdAssigns.map(a => a.date), lt: 'weekday', assigns: wdAssigns });
 
-  return { schedule, groupInfos, newQp: { weekday: w, h12, h3, h4, h5 } };
+  return { schedule, groupInfos, newQp: { weekday: w, h12, h3, h4, h5 }, newLastDate };
 }
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
@@ -291,6 +312,7 @@ export default function MasterScheduleGenerator({ year, month, doctors, activeDo
       ...queueState,
       ...result.newQp,
       debt: {}, // debt is one-time correction — reset after each generation
+      lastDate: { ...(queueState.lastDate || {}), ...result.newLastDate },
     };
     onConfirm(result.schedule, newQueueState);
   };
@@ -383,6 +405,29 @@ export default function MasterScheduleGenerator({ year, month, doctors, activeDo
                       );
                     })
                   }
+                </div>
+              </div>
+
+              {/* Last ended / this month starts at — per loop */}
+              <div>
+                <p className="text-xs font-medium text-slate-600 mb-2">สรุปคิวล่าสุด</p>
+                <div className="grid grid-cols-1 gap-1.5">
+                  {qRows.map(({ k, q, label }) => {
+                    const info = lastNextInLoop(q, qp[k]);
+                    if (!info) return null;
+                    const lastName = doctors.find(d => d.id === info.lastId)?.name ?? '?';
+                    const nextName = doctors.find(d => d.id === info.nextId)?.name ?? '?';
+                    const lastLabel = info.lastHasDup ? `${lastName}${info.lastOcc}` : lastName;
+                    const nextLabel = info.nextHasDup ? `${nextName}${info.nextOcc}` : nextName;
+                    const lastDateStr = queueState.lastDate?.[k];
+                    return (
+                      <div key={k} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-600">
+                        <span className="font-medium text-slate-700">{label}</span>
+                        {' '}ล่าสุด{lastDateStr ? ` ${formatDisplayDate(lastDateStr)}` : ''} จบที่ <b>{lastLabel}</b>
+                        {' '}ดังนั้น {monthLabel} เริ่มที่ <b>{nextLabel}</b>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 

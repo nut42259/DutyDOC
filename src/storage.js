@@ -109,6 +109,11 @@ const DEFAULT_QUEUE_STATE = {
   debt: {},
   // recurring unavailability rules: [{docId, dow, occurrences}]
   recurringRules: [],
+  // Date each loop last actually had an assignment (ISO string, or null if
+  // unknown) — updated automatically every time a master schedule generation
+  // is confirmed. Only tracks going forward from whenever this field was
+  // introduced; older history isn't back-filled since it can't be verified.
+  lastDate: { weekday: null, h12: null, h3: null, h4: null, h5: null },
 };
 
 export async function getQueueState() {
