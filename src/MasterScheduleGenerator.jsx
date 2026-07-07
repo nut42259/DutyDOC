@@ -166,7 +166,18 @@ function generateSchedule({ year, month, holidayDates, avail, WDQ, H12Q, H3Q, qp
   }
   groupInfos.unshift({ dates: wdAssigns.map(a => a.date), lt: 'weekday', assigns: wdAssigns });
 
-  return { schedule, groupInfos, newQp: { weekday: w, h12, h3, h4, h5 }, newLastDate };
+  // debtCopy has been mutated in place as priority pulls / skips consumed it —
+  // whatever's left (e.g. a +1 on a loop type that had no groups this month,
+  // so it never got a chance to fire) must carry forward to future months,
+  // not just vanish. Drop zeroed-out entries so leftover debt doesn't
+  // accumulate clutter in the stored state.
+  const remainingDebt = {};
+  Object.entries(debtCopy).forEach(([docId, byLoop]) => {
+    const cleaned = Object.fromEntries(Object.entries(byLoop).filter(([, v]) => v !== 0));
+    if (Object.keys(cleaned).length > 0) remainingDebt[docId] = cleaned;
+  });
+
+  return { schedule, groupInfos, newQp: { weekday: w, h12, h3, h4, h5 }, newLastDate, remainingDebt };
 }
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
@@ -311,7 +322,10 @@ export default function MasterScheduleGenerator({ year, month, doctors, activeDo
     const newQueueState = {
       ...queueState,
       ...result.newQp,
-      debt: {}, // debt is one-time correction — reset after each generation
+      // Only debt actually consumed this generation is cleared — anything
+      // left (e.g. a +1 on a loop type with no groups this month) carries
+      // forward so it still fires whenever that loop type next comes up.
+      debt: result.remainingDebt,
       lastDate: { ...(queueState.lastDate || {}), ...result.newLastDate },
     };
     onConfirm(result.schedule, newQueueState);

@@ -979,11 +979,12 @@ export default function App() {
     setCurrentScheduleGenerated(false);
     setScheduleStale(false);
     await saveMonth({ masterSchedule: nextMaster, masterOriginal: nextOriginal, scheduleOverrides: {}, currentSchedule: {}, currentScheduleGenerated: false, scheduleStale: false });
-    // Persist new queue state
-    // Ensure debt is cleared in persisted state too
-    const cleanQueueState = { ...newQueueState, debt: {} };
-    setQueueStateLocal(cleanQueueState);
-    await setQueueState(cleanQueueState);
+    // Persist new queue state. newQueueState.debt already reflects only what
+    // was actually consumed this generation (see MasterScheduleGenerator's
+    // handleConfirm) — untouched debt (e.g. a loop type with no groups this
+    // month) must carry forward, not be wiped here too.
+    setQueueStateLocal(newQueueState);
+    await setQueueState(newQueueState);
     await addNotification(
       `จัดตารางเวรต้นแบบ ${['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'][month]} ${year + 543} สำเร็จแล้ว`,
       `📅 จัดตารางเวรต้นแบบ ${['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'][month]} ${year + 543} สำเร็จแล้ว`
