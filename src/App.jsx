@@ -109,19 +109,102 @@ function parseFlexibleDate(val) {
   return null;
 }
 
+// Exhaustive constraint-satisfaction search: is there ANY assignment of every
+// date to a doctor such that everyone ends up with EXACTLY their master
+// quota, nobody works two calendar-adjacent days, and nobody works a date
+// they marked unavailable? This is a real depth-first backtracking search
+// (not a single greedy pass) — at each step it picks the *most constrained*
+// remaining date (fewest legal candidates — the classic CSP "minimum
+// remaining values" heuristic, which makes dead ends surface fast) and tries
+// every legal candidate for it, backtracking across ANY earlier date if a
+// later one turns out impossible. Deterministic: same input always produces
+// the same output, no randomness. Bounded by `budget` recursive steps so a
+// pathological month can't hang the browser — if the budget runs out we
+// genuinely don't know whether a solution exists (as opposed to `solved:
+// false` reached without hitting the budget, which proves none exists).
+function exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSchedule, holidaySet, budget }) {
+  const remaining = {};
+  doctors.forEach(d => { remaining[d.id] = { ...(quota[d.id] || { weekday: 0, holiday: 0 }) }; });
+  const assign = {};
+  const dateIndex = {};
+  dates.forEach((d, i) => { dateIndex[d] = i; });
+  const unassigned = new Set(dates);
+
+  const neighborsOf = (date) => {
+    const i = dateIndex[date];
+    const out = [];
+    if (i > 0) out.push(dates[i - 1]);
+    if (i < dates.length - 1) out.push(dates[i + 1]);
+    return out;
+  };
+
+  const candidatesFor = (date) => {
+    const type = dayType(date, holidaySet);
+    const nominal = masterSchedule[date];
+    return doctors
+      .map(d => d.id)
+      .filter(id => (remaining[id]?.[type] || 0) > 0 && !unavailSet[id].has(date) && !neighborsOf(date).some(n => assign[n] === id))
+      .sort((a, b) => {
+        // Preference only (doesn't affect completeness): try the master's
+        // nominal owner first, then whoever needs shifts of this type most.
+        if (a === nominal) return -1;
+        if (b === nominal) return 1;
+        const qa = quota[a]?.[type] || 1, qb = quota[b]?.[type] || 1;
+        return ((remaining[b]?.[type] ?? 0) / qb) - ((remaining[a]?.[type] ?? 0) / qa);
+      });
+  };
+
+  let steps = 0;
+  let timedOut = false;
+
+  function backtrack() {
+    if (timedOut) return false;
+    if (++steps > budget) { timedOut = true; return false; }
+    if (unassigned.size === 0) return true;
+
+    let bestDate = null, bestCandidates = null;
+    for (const date of unassigned) {
+      const c = candidatesFor(date);
+      if (bestCandidates === null || c.length < bestCandidates.length) {
+        bestDate = date; bestCandidates = c;
+        if (c.length === 0) break; // can't do worse than zero candidates
+      }
+    }
+    if (bestCandidates.length === 0) return false;
+
+    unassigned.delete(bestDate);
+    const type = dayType(bestDate, holidaySet);
+    for (const docId of bestCandidates) {
+      assign[bestDate] = docId;
+      remaining[docId][type] -= 1;
+      if (backtrack()) return true;
+      remaining[docId][type] += 1;
+      assign[bestDate] = null;
+      if (timedOut) { unassigned.add(bestDate); return false; }
+    }
+    unassigned.add(bestDate);
+    return false;
+  }
+
+  const solved = backtrack();
+  return { solved, timedOut, assign };
+}
+
 // Regenerates the ENTIRE current-month schedule from scratch. buildCurrentSchedule
 // assigns each doctor EXACTLY their master-schedule quota of weekday and holiday
 // shifts, respecting unavailability and the no-adjacent-days rule.
 //
-// Approach: seed the schedule with the master's own assignments (which by
-// construction already gives everyone exactly their quota), then patch every
-// date whose nominal owner is unavailable. A "patch" is an augmenting-path
-// search — similar to bipartite matching with side constraints — that may
-// recursively displace and relocate OTHER doctors' assignments (not just a
-// single 2-person swap) so every displaced person still ends up with exactly
-// their original quota and no adjacent-day conflict. Only when no such chain
-// of relocations exists anywhere in the month is a date recorded as a genuine
-// violation (the nominal owner is then kept in place as a last resort).
+// Approach: first try exhaustiveSolveSchedule — a real backtracking search
+// that finds a PERFECT assignment whenever one exists, and is the only way
+// to actually guarantee that (a fixed heuristic can miss valid solutions a
+// full search would find). Only if that search is inconclusive (budget
+// exceeded) or proves no perfect assignment exists do we fall back to a
+// heuristic: seed from the master schedule, then patch every date whose
+// nominal owner is unavailable via an augmenting-path-style search that may
+// recursively displace and relocate other doctors' assignments so displaced
+// people still end up at their original quota. Only when no such chain of
+// relocations exists is a date recorded as a genuine violation (the nominal
+// owner is then kept in place as a last resort).
 function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailability, holidaySet }) {
   const total = daysInMonth(year, month);
   const dates = Array.from({ length: total }, (_, i) => isoDate(year, month, i + 1));
@@ -136,11 +219,22 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
 
   // Quota = exactly what the master schedule gives each doctor, per type.
   const quota = computeUsage(doctors, masterSchedule, holidaySet);
-  const remaining = {};
-  doctors.forEach(d => { remaining[d.id] = { ...(quota[d.id] || { weekday: 0, holiday: 0 }) }; });
 
   const unavailSet = {};
   doctors.forEach(d => { unavailSet[d.id] = new Set(unavailability[d.id] || []); });
+
+  // Try for a mathematically perfect assignment first. Whenever one exists,
+  // this is guaranteed to find it — no heuristic can promise that.
+  const exhaustive = exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSchedule, holidaySet, budget: 300000 });
+  if (exhaustive.solved) {
+    return { schedule: exhaustive.assign, violations: [] };
+  }
+
+  // No perfect assignment found within budget (or proven impossible) — fall
+  // back to the chain-relocation heuristic below, which gets as close as
+  // possible and honestly flags whatever it couldn't resolve.
+  const remaining = {};
+  doctors.forEach(d => { remaining[d.id] = { ...(quota[d.id] || { weekday: 0, holiday: 0 }) }; });
 
   const assign = {};
   dates.forEach(d => { assign[d] = null; });
@@ -879,10 +973,14 @@ export default function App() {
     if (nextStale !== scheduleStale) setScheduleStale(nextStale);
   };
 
-  const toggleUnavailabilityConfirmed = () => {
-    if (!currentDoctorId) return;
+  // docId defaults to the logged-in user's own id (used by the doctor-role
+  // tab); the admin panel passes whichever doctor is currently selected,
+  // which covers the admin's own record too since admin has no separate
+  // "doctor" view of themselves.
+  const toggleUnavailabilityConfirmed = (docId = currentDoctorId) => {
+    if (!docId) return;
     setUnavailabilityConfirmed(prev => {
-      const next = prev.includes(currentDoctorId) ? prev.filter(id => id !== currentDoctorId) : [...prev, currentDoctorId];
+      const next = prev.includes(docId) ? prev.filter(id => id !== docId) : [...prev, docId];
       storageSet(monthKey(year, month), { masterSchedule, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleStale, scheduleOverrides, unavailability, unavailabilityConfirmed: next, activeDoctorIds });
       return next;
     });
@@ -1026,6 +1124,16 @@ export default function App() {
   // confirmation status resets since their picture changed.
   const acceptPost = (post) => {
     if (post.targetDoctorId && post.targetDoctorId !== currentDoctorId) return;
+    // This mutates the CURRENTLY LOADED month's in-memory state directly, so
+    // a post belonging to some other month must not be accepted from here —
+    // that would silently write the change into the wrong month's data. The
+    // marketplace tab's own month nav makes switching to the right month a
+    // single click away.
+    const postDateMonthKey = monthKey(Number(post.date.slice(0, 4)), Number(post.date.slice(5, 7)) - 1);
+    if (postDateMonthKey !== monthKey(year, month)) {
+      showToast('กรุณาเปลี่ยนไปเดือนของเวรนี้ก่อน (ที่แท็บตลาดแลกเปลี่ยน) แล้วค่อยรับ/ยืนยันอีกครั้ง');
+      return;
+    }
     const takerId = currentDoctorId;
     const nextStale = currentScheduleGenerated ? true : scheduleStale;
 
@@ -1473,13 +1581,18 @@ export default function App() {
               <AdminUnavailablePanel
                 year={year} month={month} doctors={activeDoctors} allDoctors={doctors}
                 unavailability={unavailability} effectiveSchedule={effectiveSchedule}
-                holidaySet={holidaySet} masterSchedule={masterSchedule}
+                holidaySet={holidaySet} masterSchedule={masterSchedule} defaultDocId={currentDoctorId}
+                unavailabilityConfirmed={unavailabilityConfirmed} onToggleConfirmed={toggleUnavailabilityConfirmed}
                 onToggle={(docId, date) => {
                   setUnavailability(prev => {
                     const mine = prev[docId] || [];
                     const next = mine.includes(date) ? mine.filter(d => d !== date) : [...mine, date].sort();
                     const updated = { ...prev, [docId]: next };
-                    saveMonth({ unavailability: updated });
+                    setUnavailabilityConfirmed(prevC => {
+                      const nextC = prevC.filter(id => id !== docId); // editing again un-confirms
+                      saveMonth({ unavailability: updated, unavailabilityConfirmed: nextC });
+                      return nextC;
+                    });
                     return updated;
                   });
                 }}
@@ -1496,7 +1609,7 @@ export default function App() {
             marketplace={marketplace} myAssignedDates={myAssignedDates} holidaySet={holidaySet}
             currentScheduleGenerated={currentScheduleGenerated}
             unavailability={unavailability} effectiveSchedule={effectiveSchedule}
-            year={year} month={month}
+            year={year} month={month} onShiftMonth={shiftMonth}
             createPost={createPost} createBulkSell={createBulkSell} cancelPost={cancelPost} declinePost={declinePost} acceptPost={acceptPost}
           />
         )}
@@ -1611,11 +1724,12 @@ function SwapCalendar({ year, month, candidateDates, selected, holidaySet, getDo
   );
 }
 
-function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace, myAssignedDates, holidaySet, currentScheduleGenerated, unavailability, effectiveSchedule, year, month, createPost, createBulkSell, cancelPost, declinePost, acceptPost }) {
-  // No separate month picker here — the whole app only ever loads one
-  // month's schedule at a time (via the main tabs' month nav), so this tab
-  // always reflects whichever month is currently loaded. Posts/history are
-  // shown across all time rather than filtered to a month.
+function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace, myAssignedDates, holidaySet, currentScheduleGenerated, unavailability, effectiveSchedule, year, month, onShiftMonth, createPost, createBulkSell, cancelPost, declinePost, acceptPost }) {
+  // The month nav here drives the SAME global year/month as every other tab
+  // (not a separate local picker) — so "my shifts this month" and swap
+  // candidates always come from whichever month is actually loaded, with no
+  // risk of the two drifting out of sync. Posts/history are shown across all
+  // time rather than filtered to a month.
   const [sellDate, setSellDate] = useState('');
   const [sellTarget, setSellTarget] = useState('');
   const [swapDate, setSwapDate] = useState('');
@@ -1682,8 +1796,18 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
 
   const canAct = (p) => !p.targetDoctorId || p.targetDoctorId === currentDoctorId;
 
+  // Selections reference specific dates, which only make sense for the month
+  // they came from — clear them whenever the loaded month changes so a stale
+  // date from the previous month can't linger in the form.
+  useEffect(() => {
+    setSellDate(''); setSellTarget('');
+    setSwapDate(''); setSwapTarget(''); setSwapRequestedDate(''); setSwapSelfAdjacentConfirmed(false);
+  }, [year, month]);
+
   return (
     <div className="max-w-2xl space-y-8">
+      <MonthNav year={year} month={month} onShift={onShiftMonth} />
+
       {!currentScheduleGenerated && (
         <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 flex items-start gap-2">
           <Info size={14} className="mt-0.5 shrink-0" />
@@ -1941,8 +2065,13 @@ function RecurringUnavailablePanel({ year, month, onApply }) {
   );
 }
 
-function AdminUnavailablePanel({ year, month, doctors, allDoctors, unavailability, effectiveSchedule, holidaySet, masterSchedule, onToggle, onApplyRecurring, onClearMonth }) {
-  const [selectedDocId, setSelectedDocId] = useState(doctors[0]?.id || null);
+function AdminUnavailablePanel({ year, month, doctors, allDoctors, unavailability, effectiveSchedule, holidaySet, masterSchedule, defaultDocId, unavailabilityConfirmed, onToggleConfirmed, onToggle, onApplyRecurring, onClearMonth }) {
+  // Default to the logged-in admin's own entry (falling back to the first
+  // doctor in the roster if they're not in this month's active list) so
+  // admin doesn't have to re-select themselves every time.
+  const [selectedDocId, setSelectedDocId] = useState(
+    doctors.find(d => d.id === defaultDocId)?.id ?? doctors[0]?.id ?? null
+  );
   const WEEKDAY_LABELS = ['อา','จ','อ','พ','พฤ','ศ','ส'];
   const pad2 = n => String(n).padStart(2,'0');
   const isoDate = (y, m, d) => `${y}-${pad2(m + 1)}-${pad2(d)}`;
@@ -2018,6 +2147,21 @@ function AdminUnavailablePanel({ year, month, doctors, allDoctors, unavailabilit
                 </button>
               )}
             </div>
+            {(() => {
+              const confirmed = unavailabilityConfirmed.includes(selectedDocId);
+              return (
+                <div className={`mt-3 flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 ${confirmed ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200'}`}>
+                  <p className="text-xs text-slate-600">
+                    {confirmed
+                      ? <span className="text-emerald-700 font-medium flex items-center gap-1"><Check size={14} /> {doc?.name} ยืนยันแล้วว่าแจ้งวันไม่สะดวกครบสำหรับเดือนนี้</span>
+                      : `${doc?.name} แจ้งวันไม่สะดวกครบแล้วหรือยัง? กดยืนยันเพื่อให้นับในสถานะความพร้อมจัดเวร`}
+                  </p>
+                  <button onClick={() => onToggleConfirmed(selectedDocId)} className={`shrink-0 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors ${confirmed ? 'text-slate-500 hover:bg-slate-100' : 'bg-teal-600 hover:bg-teal-700 text-white'}`}>
+                    {confirmed ? 'ยกเลิกการยืนยัน' : 'ยืนยันว่าแจ้งครบแล้ว'}
+                  </button>
+                </div>
+              );
+            })()}
           </>
         );
       })()}
