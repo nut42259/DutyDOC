@@ -736,17 +736,36 @@ export default function App() {
     return eff;
   }, [currentSchedule, scheduleOverrides]);
 
+  // Cross-device data (doctor roster, queue state, marketplace posts,
+  // notifications) is only ever fetched here — there's no realtime sync, so
+  // a browser tab left open won't see what another device did in the
+  // meantime. Re-running this on login and whenever the marketplace tab is
+  // opened is what actually surfaces those changes; setting queueState to a
+  // freshly-fetched object also cascades into a re-fetch of the current
+  // month's own data, since that effect depends on it.
+  const refreshData = useCallback(async () => {
+    const [dbDoctors, cfg, qs] = await Promise.all([getDoctors(), storageGet('config', { holidays: [] }), getQueueState()]);
+    setDoctors(dbDoctors);
+    setHolidays(cfg.holidays || []);
+    setMarketplace(await storageGet('marketplace', []));
+    setNotifications(await storageGet('notifications', []));
+    setQueueStateLocal(qs);
+  }, []);
+
   useEffect(() => {
     (async () => {
-      const [dbDoctors, cfg, qs] = await Promise.all([getDoctors(), storageGet('config', { holidays: [] }), getQueueState()]);
-      setDoctors(dbDoctors);
-      setHolidays(cfg.holidays || []);
-      setQueueStateLocal(qs);
-      setMarketplace(await storageGet('marketplace', []));
-      setNotifications(await storageGet('notifications', []));
+      await refreshData();
       setLoading(false);
     })();
-  }, []);
+  }, [refreshData]);
+
+  // Marketplace data is the most time-sensitive to cross-device staleness
+  // (someone else's sell/accept becoming invisible until reload) — refresh
+  // it every time this tab is opened, not just once at page load.
+  useEffect(() => {
+    if (activeTab === 'marketplace' && currentUser) refreshData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   useEffect(() => {
     (async () => {
@@ -1132,6 +1151,30 @@ export default function App() {
     showToast(toAdd.length ? 'บันทึกวันไม่สะดวกประจำเรียบร้อย' : 'บันทึก rule แล้ว — เดือนนี้ไม่มีวันดังกล่าว จะ apply อัตโนมัติในเดือนที่มี');
   };
 
+  const deleteRecurringRule = (docId, dow) => {
+    if (!docId) return;
+    setQueueStateLocal(prev => {
+      if (!prev) return prev;
+      const rule = (prev.recurringRules || []).find(r => r.docId === docId && r.dow === dow);
+      const rules = (prev.recurringRules || []).filter(r => !(r.docId === docId && r.dow === dow));
+      const next = { ...prev, recurringRules: rules };
+      setQueueState(next).catch(console.error);
+      // Also remove any dates this rule injected into the currently viewed
+      // month — leaves manually-toggled dates untouched.
+      if (rule) {
+        const toRemove = new Set(recurringDatesForMonth(year, month, dow, rule.occurrences));
+        setUnavailability(prevU => {
+          const mine = (prevU[docId] || []).filter(d => !toRemove.has(d));
+          const updated = { ...prevU, [docId]: mine };
+          storageSet(monthKey(year, month), { masterSchedule, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleStale, scheduleOverrides, unavailability: updated, unavailabilityConfirmed, activeDoctorIds });
+          return updated;
+        });
+      }
+      return next;
+    });
+    showToast('ลบวันไม่สะดวกประจำแล้ว');
+  };
+
   const clearUnavailableMonth = (docId) => {
     if (!docId) return;
     setUnavailability(prev => {
@@ -1156,26 +1199,29 @@ export default function App() {
     return Object.entries(source).filter(([, id]) => id === docId).map(([d]) => d).sort();
   };
 
-  const createPost = (date, type, targetDoctorId, requestedDate) => {
-    const post = { id: genId(), date, posterId: currentDoctorId, type, targetDoctorId: targetDoctorId || null, requestedDate: requestedDate || null, status: 'open', takerId: null, createdAt: new Date().toISOString() };
+  // actorId defaults to the logged-in user, but admin can act on behalf of
+  // another doctor from the marketplace tab (e.g. someone forgot to post
+  // their own sell/accept) — in that case actorId is that doctor's id.
+  const createPost = (date, type, targetDoctorId, requestedDate, actorId = currentDoctorId) => {
+    const post = { id: genId(), date, posterId: actorId, type, targetDoctorId: targetDoctorId || null, requestedDate: requestedDate || null, status: 'open', takerId: null, createdAt: new Date().toISOString() };
     setMarketplace(prev => {
       const next = [post, ...prev];
       storageSet('marketplace', next);
       return next;
     });
-    const posterName = getDoctor(currentDoctorId)?.name;
+    const posterName = getDoctor(actorId)?.name;
     const targetName = targetDoctorId ? getDoctor(targetDoctorId)?.name : null;
     const desc = type === 'swap'
-      ? `แลกเวร: วันที่ ${formatDisplayDate(date)} (ของฉัน) ↔ วันที่ ${formatDisplayDate(requestedDate)} (ของ ${targetName})`
+      ? `แลกเวร: วันที่ ${formatDisplayDate(date)} (ของ${posterName}) ↔ วันที่ ${formatDisplayDate(requestedDate)} (ของ ${targetName})`
       : (targetName ? `ขายเวรวันที่ ${formatDisplayDate(date)} ให้ ${targetName} โดยเฉพาะ` : `ขายเวรวันที่ ${formatDisplayDate(date)} (เปิดให้ทุกคน)`);
     addNotification(`${posterName} ลงประกาศ${desc}`, `📢 ${posterName} ลงประกาศ${desc}`);
     showToast('ลงประกาศเรียบร้อย');
   };
 
-  const createBulkSell = (dates, targetDoctorId) => {
+  const createBulkSell = (dates, targetDoctorId, actorId = currentDoctorId) => {
     if (dates.length === 0) { showToast('ไม่มีเวรที่ยังไม่ได้ลงขาย'); return; }
     const newPosts = dates.map(date => ({
-      id: genId(), date, posterId: currentDoctorId, type: 'sell', targetDoctorId: targetDoctorId || null, requestedDate: null,
+      id: genId(), date, posterId: actorId, type: 'sell', targetDoctorId: targetDoctorId || null, requestedDate: null,
       status: 'open', takerId: null, createdAt: new Date().toISOString(),
     }));
     setMarketplace(prev => {
@@ -1183,7 +1229,7 @@ export default function App() {
       storageSet('marketplace', next);
       return next;
     });
-    const posterName = getDoctor(currentDoctorId)?.name;
+    const posterName = getDoctor(actorId)?.name;
     const targetName = targetDoctorId ? getDoctor(targetDoctorId)?.name : null;
     const desc = targetName ? `ขายเวรทั้งหมด ${dates.length} วัน ให้ ${targetName} โดยเฉพาะ` : `ขายเวรทั้งหมด ${dates.length} วัน (เปิดให้ทุกคน)`;
     addNotification(`${posterName} ลงประกาศ${desc}`, `📢 ${posterName} ลงประกาศ${desc}`);
@@ -1198,13 +1244,13 @@ export default function App() {
     });
   };
 
-  const declinePost = (post) => {
+  const declinePost = (post, actorId = currentDoctorId) => {
     setMarketplace(prev => {
       const next = prev.map(p => p.id === post.id ? { ...p, status: 'cancelled' } : p);
       storageSet('marketplace', next);
       return next;
     });
-    const takerName = getDoctor(currentDoctorId)?.name;
+    const takerName = getDoctor(actorId)?.name;
     addNotification(`${takerName} ปฏิเสธคำขอวันที่ ${formatDisplayDate(post.date)} จาก ${getDoctor(post.posterId)?.name}`, `❌ ${takerName} ปฏิเสธคำขอวันที่ ${formatDisplayDate(post.date)}`);
   };
 
@@ -1213,74 +1259,94 @@ export default function App() {
   // the master afterward (see buildCurrentSchedule), which is what keeps
   // everyone's weekday/holiday totals matching the new quota AND guarantees
   // nobody ends up with adjacent duty days — so no validation is needed here.
-  // Uses the functional setState form because accepting several posts in a
-  // row (very normal after a bulk sell) previously raced: each call read
-  // masterSchedule from a stale closure, so a fast second accept could wipe
-  // out the first one's change entirely.
   // A completed trade implies the giver is unavailable on the date(s) they
   // gave away (that's practically why they sold/swapped it), and the new
-  // owner obviously must be treated as available there. Both parties'
-  // confirmation status resets since their picture changed.
-  const acceptPost = (post) => {
-    if (post.targetDoctorId && post.targetDoctorId !== currentDoctorId) return;
-    // This mutates the CURRENTLY LOADED month's in-memory state directly, so
-    // a post belonging to some other month must not be accepted from here —
-    // that would silently write the change into the wrong month's data. The
-    // marketplace tab's own month nav makes switching to the right month a
-    // single click away.
-    const postDateMonthKey = monthKey(Number(post.date.slice(0, 4)), Number(post.date.slice(5, 7)) - 1);
-    if (postDateMonthKey !== monthKey(year, month)) {
-      showToast('กรุณาเปลี่ยนไปเดือนของเวรนี้ก่อน (ที่แท็บตลาดแลกเปลี่ยน) แล้วค่อยรับ/ยืนยันอีกครั้ง');
-      return;
-    }
-    const takerId = currentDoctorId;
-    const nextStale = currentScheduleGenerated ? true : scheduleStale;
+  // owner obviously must be treated as available there.
+  //
+  // Always reads each affected month FRESH from Supabase right before
+  // writing, rather than trusting local React state — this app has no
+  // realtime sync, so a tab left open can be stale relative to what another
+  // device already did (this was the root cause of accepted trades silently
+  // "disappearing": two devices both mutated their own stale in-memory copy
+  // and the last write won). Reading fresh per month also means this works
+  // for a post from ANY month, not just whichever one is currently loaded —
+  // which is what makes cross-month swap and multi-month bulk-buy possible.
+  const acceptPost = async (post, actorId = currentDoctorId) => {
+    if (post.targetDoctorId && post.targetDoctorId !== actorId) return;
+    const takerId = actorId;
+    const dateMonthKey = monthKey(Number(post.date.slice(0, 4)), Number(post.date.slice(5, 7)) - 1);
+    const loadedMonthKey = monthKey(year, month);
+    const nextStaleFor = (raw) => raw.currentScheduleGenerated ? true : (raw.scheduleStale || false);
+
+    // Fetches ONE month's stored data fresh, applies `mutate(raw) -> patch`,
+    // persists the merged result, and mirrors it into React state too if
+    // it's the currently loaded month (so the visible UI updates immediately).
+    const patchMonth = async (mk, mutate) => {
+      const raw = (await getMonthData(mk)) || {};
+      const patch = mutate(raw);
+      await setMonthData(mk, { ...raw, ...patch });
+      if (mk === loadedMonthKey) {
+        if ('masterSchedule' in patch) setMasterSchedule(patch.masterSchedule);
+        if ('scheduleOverrides' in patch) setScheduleOverrides(patch.scheduleOverrides);
+        if ('unavailability' in patch) setUnavailability(patch.unavailability);
+        if ('unavailabilityConfirmed' in patch) setUnavailabilityConfirmed(patch.unavailabilityConfirmed);
+        if ('scheduleStale' in patch) setScheduleStale(patch.scheduleStale);
+      }
+    };
 
     if (post.type === 'swap') {
       // SWAP: only touches the current schedule (overrides) and unavailability.
-      // Master schedule and quotas stay exactly the same.
-      // By requesting the swap, the poster implicitly can't do their original
-      // date → mark it unavailable for them automatically.
-      setScheduleOverrides(prevOverrides => {
-        const nextOverrides = { ...prevOverrides, [post.date]: takerId, [post.requestedDate]: post.posterId };
-        setUnavailability(prevUnavail => {
-          const nextUnavail = { ...prevUnavail };
-          // poster can't do post.date; taker can't do post.requestedDate
+      // Master schedule and quotas stay exactly the same. By requesting the
+      // swap, the poster implicitly can't do their original date anymore →
+      // mark it unavailable for them automatically (and likewise for the
+      // taker on the date they're giving up in exchange).
+      const reqMonthKey = monthKey(Number(post.requestedDate.slice(0, 4)), Number(post.requestedDate.slice(5, 7)) - 1);
+      const sameMonth = reqMonthKey === dateMonthKey;
+
+      if (sameMonth) {
+        await patchMonth(dateMonthKey, (raw) => {
+          const nextOverrides = { ...(raw.scheduleOverrides || {}), [post.date]: takerId, [post.requestedDate]: post.posterId };
+          const nextUnavail = { ...(raw.unavailability || {}) };
           const addUnavail = (docId, date) => {
             const list = nextUnavail[docId] || [];
             if (!list.includes(date)) nextUnavail[docId] = [...list, date].sort();
           };
           addUnavail(post.posterId, post.date);
           addUnavail(takerId, post.requestedDate);
-          storageSet(monthKey(year, month), { masterSchedule, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleViolations, scheduleStale: nextStale, scheduleOverrides: nextOverrides, unavailability: nextUnavail, unavailabilityConfirmed, activeDoctorIds });
-          return nextUnavail;
+          return { scheduleOverrides: nextOverrides, unavailability: nextUnavail, scheduleStale: nextStaleFor(raw) };
         });
-        return nextOverrides;
-      });
+      } else {
+        await patchMonth(dateMonthKey, (raw) => {
+          const nextOverrides = { ...(raw.scheduleOverrides || {}), [post.date]: takerId };
+          const nextUnavail = { ...(raw.unavailability || {}) };
+          const list = nextUnavail[post.posterId] || [];
+          if (!list.includes(post.date)) nextUnavail[post.posterId] = [...list, post.date].sort();
+          return { scheduleOverrides: nextOverrides, unavailability: nextUnavail, scheduleStale: nextStaleFor(raw) };
+        });
+        await patchMonth(reqMonthKey, (raw) => {
+          const nextOverrides = { ...(raw.scheduleOverrides || {}), [post.requestedDate]: post.posterId };
+          const nextUnavail = { ...(raw.unavailability || {}) };
+          const list = nextUnavail[takerId] || [];
+          if (!list.includes(post.requestedDate)) nextUnavail[takerId] = [...list, post.requestedDate].sort();
+          return { scheduleOverrides: nextOverrides, unavailability: nextUnavail, scheduleStale: nextStaleFor(raw) };
+        });
+      }
     } else {
       // SELL: permanent quota transfer — must update master so the next
       // "จัดเวร" reflects the new ownership, and mark the seller unavailable
       // on that date (they gave it away for a reason).
-      setMasterSchedule(prevMaster => {
-        const nextMaster = { ...prevMaster, [post.date]: takerId };
-        setUnavailability(prevUnavail => {
-          const nextUnavail = {};
-          Object.keys(prevUnavail).forEach(id => { nextUnavail[id] = [...(prevUnavail[id] || [])]; });
-          const list = nextUnavail[post.posterId] || [];
-          if (!list.includes(post.date)) nextUnavail[post.posterId] = [...list, post.date].sort();
-          const takerList = nextUnavail[takerId] || [];
-          nextUnavail[takerId] = takerList.filter(d => d !== post.date);
-          setUnavailabilityConfirmed(prevConfirmed => {
-            const nextConfirmed = prevConfirmed.filter(id => id !== post.posterId && id !== takerId);
-            storageSet(monthKey(year, month), { masterSchedule: nextMaster, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleViolations, scheduleStale: nextStale, scheduleOverrides, unavailability: nextUnavail, unavailabilityConfirmed: nextConfirmed, activeDoctorIds });
-            return nextConfirmed;
-          });
-          return nextUnavail;
-        });
-        return nextMaster;
+      await patchMonth(dateMonthKey, (raw) => {
+        const nextMaster = { ...(raw.masterSchedule || raw.schedule || {}), [post.date]: takerId };
+        const nextUnavail = {};
+        Object.keys(raw.unavailability || {}).forEach(id => { nextUnavail[id] = [...(raw.unavailability[id] || [])]; });
+        const list = nextUnavail[post.posterId] || [];
+        if (!list.includes(post.date)) nextUnavail[post.posterId] = [...list, post.date].sort();
+        const takerList = nextUnavail[takerId] || [];
+        nextUnavail[takerId] = takerList.filter(d => d !== post.date);
+        const nextConfirmed = (raw.unavailabilityConfirmed || []).filter(id => id !== post.posterId && id !== takerId);
+        return { masterSchedule: nextMaster, unavailability: nextUnavail, unavailabilityConfirmed: nextConfirmed, scheduleStale: nextStaleFor(raw) };
       });
     }
-    if (nextStale !== scheduleStale) setScheduleStale(nextStale);
 
     setMarketplace(prevMarket => {
       const nextMarket = prevMarket.map(p => p.id === post.id ? { ...p, status: 'completed', takerId } : p);
@@ -1299,7 +1365,7 @@ export default function App() {
 
   /* ---------- render helpers ---------- */
 
-  if (!currentUser) return <LoginScreen doctors={doctors} onLogin={(doc) => { setCurrentUser(doc); if (doc.role === 'admin') setActiveTab('overview'); }} />;
+  if (!currentUser) return <LoginScreen doctors={doctors} onLogin={(doc) => { setCurrentUser(doc); if (doc.role === 'admin') setActiveTab('overview'); refreshData(); }} />;
   const role = currentUser.role;
   // currentDoctorId is always the logged-in user's own id, regardless of role
   const currentDoctorId = currentUser.id;
@@ -1332,7 +1398,7 @@ export default function App() {
     : [
         { id: 'current', label: 'ตารางเวรปัจจุบัน', icon: CalendarCheck },
         { id: 'master', label: 'ตารางเวรต้นแบบ', icon: CalendarIcon },
-        { id: 'unavailable', label: 'แจ้งวันไม่สะดวก', icon: UserCircle, badge: (currentDoctorId && !unavailabilityConfirmed.includes(currentDoctorId) && (masterUsage[currentDoctorId]?.weekday || 0) + (masterUsage[currentDoctorId]?.holiday || 0) > 0) ? 1 : 0 },
+        { id: 'unavailable', label: 'แจ้งวันไม่สะดวก', icon: UserCircle, badge: (currentDoctorId && !hasMasterData && !unavailabilityConfirmed.includes(currentDoctorId)) ? 1 : 0 },
         { id: 'marketplace', label: 'ตลาดแลกเปลี่ยนเวร', icon: Repeat },
         { id: 'notifications', label: 'แจ้งเตือน', icon: Bell },
       ];
@@ -1619,22 +1685,29 @@ export default function App() {
         {/* UNAVAILABLE TAB (doctor) */}
         {activeTab === 'unavailable' && role === 'doctor' && (
           <div>
-            {!currentDoctorId ? <EmptyState icon={UserCircle} title="ยังไม่มีแพทย์ในระบบ" /> : !hasMasterData ? (
-              <EmptyState icon={CalendarIcon} title="ยังไม่มีตารางเวรต้นแบบของเดือนนี้" hint="รอแอดมินกำหนดตารางเวรต้นแบบก่อน" />
-            ) : myMasterShiftCount === 0 ? (
+            {!currentDoctorId ? <EmptyState icon={UserCircle} title="ยังไม่มีแพทย์ในระบบ" /> : (hasMasterData && myMasterShiftCount === 0) ? (
               <EmptyState icon={UserCircle} title="คุณไม่มีเวรในเดือนนี้" hint={`${getDoctor(currentDoctorId)?.name} ไม่มีเวรอยู่ในตารางเวรต้นแบบของเดือน ${THAI_MONTHS[month]} ${year + 543} จึงไม่ต้องแจ้งวันไม่สะดวก`} />
             ) : (
               <>
-                <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 mb-4 flex items-start gap-2">
-                  <Info size={14} className="mt-0.5 shrink-0" />
-                  แจ้งวันไม่สะดวกให้ครบแล้วกดยืนยันด้านล่าง แอดมินจะรอให้ทุกคนยืนยันก่อนกดจัดเวร เพื่อให้จำนวนเวรวันธรรมดา/วันหยุดของทุกคนตรงกับตารางต้นแบบ และไม่มีใครอยู่เวรติดกัน — ถ้าตารางจัดไปแล้วและวันที่คุณอยู่เวรดันไม่สะดวกขึ้นมาทีหลัง คุณลงขาย/แลกเวรเองได้ที่แท็บ "ตลาดแลกเปลี่ยนเวร"
-                </div>
+                {hasMasterData ? (
+                  <div className="bg-slate-100 border border-slate-200 text-slate-600 text-xs rounded-lg px-3 py-2 mb-4 flex items-start gap-2">
+                    <Info size={14} className="mt-0.5 shrink-0" />
+                    แอดมินจัดตารางเวรต้นแบบของเดือนนี้แล้ว จึงล็อกไม่ให้แจ้ง/แก้ไขวันไม่สะดวกเพิ่มเติม — ถ้าวันที่คุณอยู่เวรดันไม่สะดวกขึ้นมา ให้ลงขาย/แลกเวรที่แท็บ "ตลาดแลกเปลี่ยนเวร" แทน
+                  </div>
+                ) : (
+                  <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 mb-4 flex items-start gap-2">
+                    <Info size={14} className="mt-0.5 shrink-0" />
+                    ยังไม่มีตารางเวรต้นแบบของเดือนนี้ — แจ้งวันไม่สะดวกล่วงหน้าได้เลย แล้วกดยืนยันด้านล่างเมื่อแจ้งครบ แอดมินจะรอให้ทุกคนยืนยันก่อนจัดตาราง เพื่อให้จำนวนเวรวันธรรมดา/วันหยุดของทุกคนตรงกับตารางต้นแบบ และไม่มีใครอยู่เวรติดกัน — เมื่อแอดมินจัดตารางต้นแบบแล้ว จะล็อกไม่ให้แก้ไขเพิ่มอีก
+                  </div>
+                )}
                 <RecurringUnavailablePanel
                   year={year} month={month}
                   onApply={(dow, occ) => applyRecurringUnavailable(currentDoctorId, dow, occ)}
+                  rules={(queueState?.recurringRules || []).filter(r => r.docId === currentDoctorId)}
+                  onDelete={(dow) => deleteRecurringRule(currentDoctorId, dow)}
                 />
                 <div className="flex items-center justify-between mb-4"><MonthNav year={year} month={month} onShift={shiftMonth} /></div>
-                <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> คลิกวันที่เพื่อแจ้ง/ยกเลิกการแจ้งไม่สะดวก ({getDoctor(currentDoctorId)?.name}) · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-indigo-50 border border-indigo-300" /> ไม่สะดวกประจำ (จาก rule) · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-50 border border-red-300" /> จิ้มเลือกเอง</p>
+                <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> {hasMasterData ? 'ดูวันไม่สะดวกที่แจ้งไว้' : 'คลิกวันที่เพื่อแจ้ง/ยกเลิกการแจ้งไม่สะดวก'} ({getDoctor(currentDoctorId)?.name}) · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-indigo-50 border border-indigo-300" /> ไม่สะดวกประจำ (จาก rule) · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-50 border border-red-300" /> จิ้มเลือกเอง</p>
                 <div className="grid grid-cols-7 gap-1 mb-1">{WEEKDAY_LABELS.map((w, i) => <div key={w} className={`text-center text-xs font-body font-semibold py-1 ${i === 0 || i === 6 ? 'text-rose-500' : 'text-slate-400'}`}>{w}</div>)}</div>
                 <div className="grid grid-cols-7 gap-1">
                   {(() => {
@@ -1650,7 +1723,7 @@ export default function App() {
                       const onDuty = effectiveSchedule[date] === currentDoctorId;
                       const type = dayType(date, holidaySet);
                       return (
-                        <button key={date} onClick={() => toggleUnavailable(date)} className={`rounded-lg border p-2 min-h-[56px] text-left transition-colors ${recurring ? 'bg-indigo-50 border-indigo-300' : marked ? 'bg-red-50 border-red-300' : type === 'holiday' ? 'bg-rose-100 border-rose-200 hover:border-teal-300' : 'bg-white border-slate-200 hover:border-teal-300'} ${onDuty ? 'ring-2 ring-offset-1 ring-teal-500' : ''}`}>
+                        <button key={date} disabled={hasMasterData} onClick={() => toggleUnavailable(date)} className={`rounded-lg border p-2 min-h-[56px] text-left transition-colors ${recurring ? 'bg-indigo-50 border-indigo-300' : marked ? 'bg-red-50 border-red-300' : type === 'holiday' ? 'bg-rose-100 border-rose-200 hover:border-teal-300' : 'bg-white border-slate-200 hover:border-teal-300'} ${onDuty ? 'ring-2 ring-offset-1 ring-teal-500' : ''} ${hasMasterData ? 'cursor-default opacity-80' : ''}`}>
                           <div className="font-mono text-[11px] text-slate-500">{Number(date.slice(-2))}</div>
                           {onDuty && <div className="text-[9px] text-teal-600 font-medium mt-0.5">อยู่เวร</div>}
                           {marked && <div className={`text-[10px] font-medium mt-0.5 ${recurring ? 'text-indigo-500' : 'text-red-500'}`}>{recurring ? 'ไม่สะดวกประจำ' : 'ไม่สะดวก'}</div>}
@@ -1659,21 +1732,27 @@ export default function App() {
                     });
                   })()}
                 </div>
-                <div className="mt-3 flex justify-end">
-                  <button onClick={() => clearUnavailableMonth(currentDoctorId)} className="text-xs text-slate-400 hover:text-red-500 hover:bg-red-50 px-2 py-1 rounded-lg transition-colors flex items-center gap-1">
-                    <span className="text-sm leading-none">🗑</span> ล้างวันไม่สะดวกเดือนนี้
-                  </button>
-                </div>
-                <div className={`mt-2 flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 ${unavailabilityConfirmed.includes(currentDoctorId) ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200'}`}>
-                  <p className="text-xs text-slate-600">
-                    {unavailabilityConfirmed.includes(currentDoctorId)
-                      ? <span className="text-emerald-700 font-medium flex items-center gap-1"><Check size={14} /> คุณยืนยันแล้วว่าแจ้งวันไม่สะดวกครบสำหรับเดือนนี้</span>
-                      : 'แจ้งวันไม่สะดวกครบแล้วหรือยัง? กดยืนยันเพื่อให้แอดมินรู้ว่าพร้อมจัดตารางแล้ว'}
-                  </p>
-                  <button onClick={toggleUnavailabilityConfirmed} className={`shrink-0 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors ${unavailabilityConfirmed.includes(currentDoctorId) ? 'text-slate-500 hover:bg-slate-100' : 'bg-teal-600 hover:bg-teal-700 text-white'}`}>
-                    {unavailabilityConfirmed.includes(currentDoctorId) ? 'ยกเลิกการยืนยัน' : 'ยืนยันว่าแจ้งครบแล้ว'}
-                  </button>
-                </div>
+                {!hasMasterData && (
+                  <>
+                    <div className="mt-3 flex justify-end">
+                      <button onClick={() => clearUnavailableMonth(currentDoctorId)} className="text-xs text-slate-400 hover:text-red-500 hover:bg-red-50 px-2 py-1 rounded-lg transition-colors flex items-center gap-1">
+                        <span className="text-sm leading-none">🗑</span> ล้างวันไม่สะดวกเดือนนี้
+                      </button>
+                    </div>
+                    <div className={`mt-2 rounded-xl border-2 px-4 py-3.5 ${unavailabilityConfirmed.includes(currentDoctorId) ? 'bg-emerald-50 border-emerald-300' : 'bg-amber-50 border-amber-400 animate-pulse'}`}>
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <p className="text-sm text-slate-700">
+                          {unavailabilityConfirmed.includes(currentDoctorId)
+                            ? <span className="text-emerald-700 font-semibold flex items-center gap-1.5"><Check size={16} /> คุณยืนยันแล้วว่าแจ้งวันไม่สะดวกครบสำหรับเดือนนี้</span>
+                            : <span className="text-amber-900 font-semibold">⚠️ แจ้งวันไม่สะดวกครบแล้วหรือยัง? อย่าลืมกดยืนยัน!</span>}
+                        </p>
+                        <button onClick={() => toggleUnavailabilityConfirmed(currentDoctorId)} className={`shrink-0 text-sm font-semibold px-4 py-2 rounded-lg transition-colors ${unavailabilityConfirmed.includes(currentDoctorId) ? 'text-slate-500 hover:bg-slate-100 bg-white border border-slate-200' : 'bg-amber-500 hover:bg-amber-600 text-white shadow-sm'}`}>
+                          {unavailabilityConfirmed.includes(currentDoctorId) ? 'ยกเลิกการยืนยัน' : 'ยืนยันว่าแจ้งครบแล้ว'}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -1695,6 +1774,7 @@ export default function App() {
                 holidaySet={holidaySet} masterSchedule={masterSchedule} defaultDocId={currentDoctorId}
                 unavailabilityConfirmed={unavailabilityConfirmed} onToggleConfirmed={toggleUnavailabilityConfirmed}
                 isRecurringUnavailable={isRecurringUnavailable}
+                recurringRules={queueState?.recurringRules} onDeleteRecurring={deleteRecurringRule}
                 onToggle={(docId, date) => {
                   setUnavailability(prev => {
                     const mine = prev[docId] || [];
@@ -1720,7 +1800,7 @@ export default function App() {
             role={role} currentDoctorId={currentDoctorId} doctors={activeDoctors} getDoctor={getDoctor}
             marketplace={marketplace} myAssignedDates={myAssignedDates} holidaySet={holidaySet}
             currentScheduleGenerated={currentScheduleGenerated}
-            unavailability={unavailability} effectiveSchedule={effectiveSchedule}
+            unavailability={unavailability} effectiveSchedule={effectiveSchedule} masterSchedule={masterSchedule}
             year={year} month={month} onShiftMonth={shiftMonth} showToast={showToast}
             createPost={createPost} createBulkSell={createBulkSell} cancelPost={cancelPost} declinePost={declinePost} acceptPost={acceptPost}
           />
@@ -1846,7 +1926,7 @@ function SwapCalendar({ year, month, candidateDates, selected, holidaySet, getDo
   );
 }
 
-function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace, myAssignedDates, holidaySet, currentScheduleGenerated, unavailability, effectiveSchedule, year, month, onShiftMonth, showToast, createPost, createBulkSell, cancelPost, declinePost, acceptPost }) {
+function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace, myAssignedDates, holidaySet, currentScheduleGenerated, unavailability, effectiveSchedule, masterSchedule, year, month, onShiftMonth, showToast, createPost, createBulkSell, cancelPost, declinePost, acceptPost }) {
   // The month nav here drives the SAME global year/month as every other tab
   // (not a separate local picker) — so "my shifts this month" and swap
   // candidates always come from whichever month is actually loaded, with no
@@ -1860,51 +1940,113 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
   const [swapSelfAdjacentConfirmed, setSwapSelfAdjacentConfirmed] = useState(false);
   const [acceptTarget, setAcceptTarget] = useState(null);
   const [buyAllConfirm, setBuyAllConfirm] = useState(false);
+  const [buyingAll, setBuyingAll] = useState(false);
+  // Which month to pick the REQUESTED (incoming) date from — defaults to
+  // swapDate's own month, but browsable forward to any future month so a
+  // shift can be swapped against a later month's schedule. {year, month} or
+  // null before a swapDate is chosen.
+  const [swapTargetYM, setSwapTargetYM] = useState(null);
+  const [targetMonthData, setTargetMonthData] = useState(null);
+  const targetIsLoadedMonth = swapTargetYM && swapTargetYM.year === year && swapTargetYM.month === month;
 
-  const myDates = currentDoctorId ? myAssignedDates(currentDoctorId) : [];
-  const otherDoctors = doctors.filter(d => d.id !== currentDoctorId);
+  useEffect(() => {
+    if (!swapDate) { setSwapTargetYM(null); return; }
+    const [y, m] = swapDate.split('-').map(Number);
+    setSwapTargetYM({ year: y, month: m - 1 });
+  }, [swapDate]);
+
+  useEffect(() => {
+    if (!swapTargetYM || targetIsLoadedMonth) { setTargetMonthData(null); return; }
+    let cancelled = false;
+    getMonthData(monthKey(swapTargetYM.year, swapTargetYM.month)).then(data => {
+      if (!cancelled) setTargetMonthData(data || {});
+    });
+    return () => { cancelled = true; };
+  }, [swapTargetYM, targetIsLoadedMonth]);
+
+  // The loaded (source) month's real assignments — current schedule if
+  // generated, else fall back to its master schedule (same fallback
+  // myAssignedDates already uses for "my dates"), so swapping still works
+  // for a month whose current schedule hasn't been generated yet.
+  const sourceEffectiveOrMaster = currentScheduleGenerated ? effectiveSchedule : masterSchedule;
+
+  // Effective schedule for whichever month the requested date is being
+  // picked from — the loaded month's own data if that's the same month,
+  // otherwise fetched on demand: current schedule if that month's already
+  // been generated, else its master schedule.
+  const targetEffectiveSchedule = !swapTargetYM ? {}
+    : targetIsLoadedMonth ? sourceEffectiveOrMaster
+    : !targetMonthData ? {}
+    : targetMonthData.currentScheduleGenerated
+      ? { ...(targetMonthData.currentSchedule || {}), ...(targetMonthData.scheduleOverrides || {}) }
+      : (targetMonthData.masterSchedule || targetMonthData.schedule || {});
+  const targetScheduleGenerated = !swapTargetYM ? false
+    : targetIsLoadedMonth ? currentScheduleGenerated
+    : !!targetMonthData?.currentScheduleGenerated;
+  const targetStillLoading = !!swapTargetYM && !targetIsLoadedMonth && !targetMonthData;
+  // Merged view spanning the source month (swapDate lives here) and the
+  // target month (swapRequestedDate lives here) — adjacency is plain
+  // calendar-date arithmetic, so a merged lookup correctly catches a
+  // conflict right at a month boundary (e.g. Aug 31 / Sep 1) too.
+  const swapScheduleMerged = { ...sourceEffectiveOrMaster, ...targetEffectiveSchedule };
+  // Admin can act on behalf of any doctor (e.g. they forgot to post their own
+  // sell, or forgot to accept one) — defaults to admin's own id, meaning
+  // nothing changes unless admin explicitly picks someone else.
+  const [actingAsId, setActingAsId] = useState(currentDoctorId);
+  const effectiveDoctorId = role === 'admin' ? (actingAsId || currentDoctorId) : currentDoctorId;
+  const actingAsSomeoneElse = role === 'admin' && effectiveDoctorId !== currentDoctorId;
+
+  const myDates = effectiveDoctorId ? myAssignedDates(effectiveDoctorId) : [];
+  const otherDoctors = doctors.filter(d => d.id !== effectiveDoctorId);
   const sellPosts = marketplace.filter(p => p.type === 'sell' && p.status === 'open');
   const swapPosts = marketplace.filter(p => p.type === 'swap' && p.status === 'open');
   const history = marketplace.filter(p => p.status !== 'open').slice(0, 8);
 
-  // "ซื้อทุกเวร" only targets posts for the CURRENTLY LOADED month — acceptPost
-  // refuses posts from any other month (to avoid writing into the wrong
-  // month's data), so bulk-buying across months would just fail silently.
-  const monthPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
+  // "ซื้อทุกเวร" spans every open post across all months (not just the one
+  // currently loaded) — acceptPost fetches each post's own month fresh from
+  // storage, so this works regardless of which month is on screen.
   const buyableSellPosts = sellPosts.filter(p =>
-    p.date.startsWith(monthPrefix) && p.posterId !== currentDoctorId && (!p.targetDoctorId || p.targetDoctorId === currentDoctorId)
+    p.posterId !== effectiveDoctorId && (!p.targetDoctorId || p.targetDoctorId === effectiveDoctorId)
   );
-  const buyAllSellPosts = () => {
-    buyableSellPosts.forEach(p => acceptPost(p));
+  const buyAllSellPosts = async () => {
+    // Sequential, not parallel: each acceptPost reads its month fresh right
+    // before writing, so two posts landing in the same month must run one
+    // after another to see each other's changes instead of racing.
+    for (const p of buyableSellPosts) {
+      await acceptPost(p, effectiveDoctorId);
+    }
   };
 
   const submitSell = () => {
     if (!sellDate) return;
-    const alreadyPosted = new Set(marketplace.filter(p => p.type === 'sell' && p.status === 'open' && p.posterId === currentDoctorId).map(p => p.date));
+    const alreadyPosted = new Set(marketplace.filter(p => p.type === 'sell' && p.status === 'open' && p.posterId === effectiveDoctorId).map(p => p.date));
     if (sellDate === '__ALL__') {
-      createBulkSell(myDates.filter(d => !alreadyPosted.has(d)), sellTarget || null);
+      createBulkSell(myDates.filter(d => !alreadyPosted.has(d)), sellTarget || null, effectiveDoctorId);
     } else if (sellDate === '__WEEKDAY__') {
-      createBulkSell(myDates.filter(d => !alreadyPosted.has(d) && dayType(d, holidaySet) === 'weekday'), sellTarget || null);
+      createBulkSell(myDates.filter(d => !alreadyPosted.has(d) && dayType(d, holidaySet) === 'weekday'), sellTarget || null, effectiveDoctorId);
     } else if (sellDate === '__HOLIDAY__') {
-      createBulkSell(myDates.filter(d => !alreadyPosted.has(d) && dayType(d, holidaySet) === 'holiday'), sellTarget || null);
+      createBulkSell(myDates.filter(d => !alreadyPosted.has(d) && dayType(d, holidaySet) === 'holiday'), sellTarget || null, effectiveDoctorId);
     } else {
-      createPost(sellDate, 'sell', sellTarget || null);
+      createPost(sellDate, 'sell', sellTarget || null, null, effectiveDoctorId);
     }
     setSellDate(''); setSellTarget('');
   };
 
-  // All dates in the current schedule owned by someone other than me,
-  // same day-type as my chosen date, that won't make the OTHER doctor
-  // adjacent if they take my date. Each entry includes the owner id.
-  const candidateSwapDates = swapDate && currentScheduleGenerated
+  // All dates in the TARGET month's schedule owned by someone other than the
+  // acting doctor, same day-type as the chosen date, that won't make the
+  // OTHER doctor adjacent if they take this date over. Each entry includes
+  // the owner id. Candidates can come from a later month than swapDate's own
+  // (cross-month swap) — the merged view keeps adjacency correct right at a
+  // month boundary.
+  const candidateSwapDates = swapDate && swapTargetYM && !targetStillLoading
     ? (() => {
         const type = dayType(swapDate, holidaySet);
-        return Object.entries(effectiveSchedule)
+        return Object.entries(targetEffectiveSchedule)
           .filter(([d, ownerId]) =>
-            ownerId && ownerId !== currentDoctorId &&
+            ownerId && ownerId !== effectiveDoctorId &&
             dayType(d, holidaySet) === type &&
             // target doctor won't be adjacent taking over our date
-            !hasAdjacentAssignment({ ...effectiveSchedule, [swapDate]: ownerId, [d]: currentDoctorId }, swapDate, ownerId)
+            !hasAdjacentAssignment({ ...swapScheduleMerged, [swapDate]: ownerId, [d]: effectiveDoctorId }, swapDate, ownerId)
           )
           .map(([d, ownerId]) => ({ d, ownerId }))
           .sort((a, b) => a.d.localeCompare(b.d));
@@ -1913,39 +2055,51 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
 
   // Once requester picks a target date, derive the targetDoctorId from it
   const swapDerivedTarget = swapRequestedDate
-    ? (effectiveSchedule[swapRequestedDate] || null)
+    ? (targetEffectiveSchedule[swapRequestedDate] || null)
     : null;
 
   // Check if the requester would end up adjacent after taking the target's date
-  const swapSelfAdjacent = swapDate && swapRequestedDate && currentDoctorId && swapDerivedTarget
-    ? hasAdjacentAssignment({ ...effectiveSchedule, [swapDate]: swapDerivedTarget, [swapRequestedDate]: currentDoctorId }, swapRequestedDate, currentDoctorId)
+  const swapSelfAdjacent = swapDate && swapRequestedDate && effectiveDoctorId && swapDerivedTarget
+    ? hasAdjacentAssignment({ ...swapScheduleMerged, [swapDate]: swapDerivedTarget, [swapRequestedDate]: effectiveDoctorId }, swapRequestedDate, effectiveDoctorId)
     : false;
 
   const submitSwap = () => {
     if (!swapDate || !swapRequestedDate || !swapDerivedTarget) return;
     if (swapSelfAdjacent && !swapSelfAdjacentConfirmed) { setSwapSelfAdjacentConfirmed(true); return; }
-    createPost(swapDate, 'swap', swapDerivedTarget, swapRequestedDate);
+    createPost(swapDate, 'swap', swapDerivedTarget, swapRequestedDate, effectiveDoctorId);
     setSwapDate(''); setSwapTarget(''); setSwapRequestedDate(''); setSwapSelfAdjacentConfirmed(false);
   };
 
-  const canAct = (p) => !p.targetDoctorId || p.targetDoctorId === currentDoctorId;
+  const canAct = (p) => !p.targetDoctorId || p.targetDoctorId === effectiveDoctorId;
 
   // Selections reference specific dates, which only make sense for the month
-  // they came from — clear them whenever the loaded month changes so a stale
-  // date from the previous month can't linger in the form.
+  // they came from — clear them whenever the loaded month or the acting-as
+  // doctor changes so a stale date/selection can't linger in the form.
   useEffect(() => {
     setSellDate(''); setSellTarget('');
     setSwapDate(''); setSwapTarget(''); setSwapRequestedDate(''); setSwapSelfAdjacentConfirmed(false);
-  }, [year, month]);
+  }, [year, month, actingAsId]);
 
   return (
     <div className="max-w-2xl space-y-8">
       <MonthNav year={year} month={month} onShift={onShiftMonth} />
 
+      {role === 'admin' && (
+        <div className={`flex items-center gap-2 flex-wrap rounded-lg border px-3 py-2 ${actingAsSomeoneElse ? 'bg-amber-50 border-amber-300' : 'bg-slate-50 border-slate-200'}`}>
+          <span className="text-xs font-medium text-slate-600">ทำรายการในนามของ:</span>
+          <select value={actingAsId || ''} onChange={(e) => setActingAsId(e.target.value || currentDoctorId)} className="border border-slate-200 rounded-lg px-2 py-1 text-sm bg-white">
+            {doctors.map(d => <option key={d.id} value={d.id}>{d.name}{d.id === currentDoctorId ? ' (ตัวฉันเอง)' : ''}</option>)}
+          </select>
+          {actingAsSomeoneElse && (
+            <span className="text-xs text-amber-700 font-medium">⚠️ กำลังทำรายการแทน {getDoctor(effectiveDoctorId)?.name} — ลงขาย/แลก/รับเวรด้านล่างจะนับเป็นของคนนี้</span>
+          )}
+        </div>
+      )}
+
       {!currentScheduleGenerated && (
         <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 flex items-start gap-2">
           <Info size={14} className="mt-0.5 shrink-0" />
-          ยังไม่ได้จัดตารางเวรปัจจุบันของเดือนนี้ วันที่แสดงด้านล่างจึงอิงจากตารางเวรต้นแบบไปก่อน หลังแอดมินกดจัดเวรแล้ว วันที่จะเปลี่ยนเป็นวันที่อยู่เวรจริง (ฟังก์ชันแลกเวรจะใช้งานได้หลังจัดเวรแล้วเท่านั้น)
+          ยังไม่ได้จัดตารางเวรปัจจุบันของเดือนนี้ วันที่แสดงด้านล่างจึงอิงจากตารางเวรต้นแบบไปก่อน หลังแอดมินกดจัดเวรแล้ว วันที่จะเปลี่ยนเป็นวันที่อยู่เวรจริง
         </div>
       )}
 
@@ -1960,7 +2114,7 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
         </div>
 
         {(role === 'doctor' || role === 'admin') && (
-          myDates.length === 0 ? <p className="text-sm text-slate-400 mb-2">คุณยังไม่มีเวรที่จัดไว้ในเดือนนี้</p> : (
+          myDates.length === 0 ? <p className="text-sm text-slate-400 mb-2">{actingAsSomeoneElse ? `${getDoctor(effectiveDoctorId)?.name}ยังไม่มีเวรที่จัดไว้ในเดือนนี้` : 'คุณยังไม่มีเวรที่จัดไว้ในเดือนนี้'}</p> : (
             <div className="flex flex-wrap items-center gap-2 mb-4">
               <select value={sellDate} onChange={(e) => setSellDate(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm font-mono">
                 <option value="">เลือกวันที่ของฉัน</option>
@@ -1982,7 +2136,7 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
           // Privacy: doctor view shows only own posts + open-to-all posts.
           // Admin sees everything.
           const visiblePosts = role === 'admin' ? sellPosts : sellPosts.filter(p =>
-            p.posterId === currentDoctorId || !p.targetDoctorId || p.targetDoctorId === currentDoctorId
+            p.posterId === effectiveDoctorId || !p.targetDoctorId || p.targetDoctorId === effectiveDoctorId
           );
           if (visiblePosts.length === 0) return <EmptyState icon={Tag} title="ยังไม่มีประกาศขายเวรสำหรับคุณ" hint="ประกาศขายเวรที่ระบุแพทย์คนอื่นโดยเฉพาะจะมองไม่เห็น" />;
           return (
@@ -1990,7 +2144,7 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
               {visiblePosts.map(p => {
                 const poster = getDoctor(p.posterId);
                 const target = p.targetDoctorId ? getDoctor(p.targetDoctorId) : null;
-                const isMine = p.posterId === currentDoctorId;
+                const isMine = p.posterId === effectiveDoctorId;
                 const eligible = canAct(p) && !isMine;
                 return (
                   <div key={p.id} className="border border-slate-200 bg-white rounded-xl p-3 flex items-center justify-between flex-wrap gap-2">
@@ -2022,28 +2176,47 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
 
       <div className="border border-indigo-200 rounded-2xl p-4 bg-indigo-50/30">
         <div className="flex items-center gap-2 mb-3"><ArrowRightLeft size={16} className="text-indigo-600" /><p className="font-display font-semibold text-slate-800">แลกเวร</p></div>
-        <p className="text-xs text-slate-400 mb-3">แลกได้เฉพาะวันธรรมดากับวันธรรมดา หรือวันหยุดกับวันหยุด และใช้ได้หลังแอดมินจัดตารางเวรปัจจุบันแล้วเท่านั้น</p>
+        <p className="text-xs text-slate-400 mb-3">แลกได้เฉพาะวันธรรมดากับวันธรรมดา หรือวันหยุดกับวันหยุด — เลือกวันของฉันก่อน แล้วเลือกวันที่ต้องการแลกมาได้จากเดือนเดียวกันหรือเดือนอื่นในอนาคตก็ได้ (ถ้าเดือนนั้นยังไม่ได้จัดเวรปัจจุบัน จะอิงจากตารางเวรต้นแบบไปก่อน)</p>
 
         {(role === 'doctor' || role === 'admin') && (
-          !currentScheduleGenerated ? (
-            <p className="text-sm text-slate-400 mb-2">รอแอดมินจัดตารางเวรปัจจุบันก่อน</p>
-          ) : myDates.length === 0 ? (
-            <p className="text-sm text-slate-400 mb-2">คุณยังไม่มีเวรในตารางปัจจุบัน</p>
+          myDates.length === 0 ? (
+            <p className="text-sm text-slate-400 mb-2">คุณยังไม่มีเวรในเดือนนี้</p>
           ) : (
             <div className="flex flex-wrap items-center gap-2 mb-4">
               <select value={swapDate} onChange={(e) => { setSwapDate(e.target.value); setSwapRequestedDate(''); setSwapSelfAdjacentConfirmed(false); }} className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm font-mono">
                 <option value="">1. เลือกวันที่ของฉันที่จะแลกออก</option>
-                {myDates.filter(d => !(unavailability[currentDoctorId] || []).includes(d)).map(d => <option key={d} value={d}>{formatDisplayDate(d)} ({dayTypeLabel(d, holidaySet)})</option>)}
+                {myDates.filter(d => !(unavailability[effectiveDoctorId] || []).includes(d)).map(d => <option key={d} value={d}>{formatDisplayDate(d)} ({dayTypeLabel(d, holidaySet)})</option>)}
               </select>
 
+              {swapDate && swapTargetYM && (() => {
+                const now = new Date();
+                const atFloor = swapTargetYM.year === now.getFullYear() && swapTargetYM.month === now.getMonth();
+                const shiftTarget = (delta) => {
+                  let m = swapTargetYM.month + delta, y = swapTargetYM.year;
+                  if (m < 0) { m = 11; y -= 1; } else if (m > 11) { m = 0; y += 1; }
+                  setSwapTargetYM({ year: y, month: m });
+                  setSwapRequestedDate(''); setSwapSelfAdjacentConfirmed(false);
+                };
+                return (
+                  <div className="w-full flex items-center gap-2 mt-1">
+                    <span className="text-xs text-slate-500">2. เดือนที่จะแลกมา:</span>
+                    <button type="button" disabled={atFloor} onClick={() => shiftTarget(-1)} className="w-6 h-6 flex items-center justify-center border border-slate-200 rounded hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed"><ChevronLeft size={14} /></button>
+                    <span className="text-xs font-medium text-slate-700 min-w-[90px] text-center">{THAI_MONTHS[swapTargetYM.month]} {swapTargetYM.year + 543}</span>
+                    <button type="button" onClick={() => shiftTarget(1)} className="w-6 h-6 flex items-center justify-center border border-slate-200 rounded hover:bg-slate-50"><ChevronRight size={14} /></button>
+                  </div>
+                );
+              })()}
+
               {swapDate && (
-                candidateSwapDates.length === 0 ? (
-                  <span className="text-xs text-red-500">ไม่มีวันประเภทเดียวกันในตารางปัจจุบันที่แลกได้โดยไม่ทำให้ใครติดกัน</span>
+                targetStillLoading ? (
+                  <span className="text-xs text-slate-400">กำลังโหลดตารางเดือนนั้น…</span>
+                ) : candidateSwapDates.length === 0 ? (
+                  <span className="text-xs text-red-500">ไม่มีวันประเภทเดียวกันในเดือนนี้ที่แลกได้โดยไม่ทำให้ใครติดกัน — ลองเปลี่ยนเดือนดู</span>
                 ) : (
                   <div className="w-full mt-1">
-                    <p className="text-xs text-slate-500 mb-2">2. เลือกวันที่ต้องการแลกมา (เฉพาะ{dayType(swapDate, holidaySet) === 'holiday' ? 'วันหยุด' : 'วันธรรมดา'})</p>
+                    <p className="text-xs text-slate-500 mb-2">3. เลือกวันที่ต้องการแลกมา (เฉพาะ{dayType(swapDate, holidaySet) === 'holiday' ? 'วันหยุด' : 'วันธรรมดา'}){!targetScheduleGenerated ? ' — เดือนนี้ยังไม่ได้จัดตารางเวรปัจจุบัน อิงจากตารางเวรต้นแบบ' : ''}</p>
                     <SwapCalendar
-                      year={year} month={month}
+                      year={swapTargetYM.year} month={swapTargetYM.month}
                       candidateDates={candidateSwapDates}
                       selected={swapRequestedDate}
                       holidaySet={holidaySet}
@@ -2056,7 +2229,7 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
 
               {swapSelfAdjacent && !swapSelfAdjacentConfirmed && (
                 <div className="w-full bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2">
-                  ⚠️ ถ้าแลกเวรนี้ <strong>คุณจะอยู่เวรติดกัน 2 วัน</strong> คุณยืนยันว่ารับได้ใช่ไหม? กดปุ่มด้านล่างอีกครั้งเพื่อยืนยัน
+                  ⚠️ ถ้าแลกเวรนี้ <strong>{actingAsSomeoneElse ? getDoctor(effectiveDoctorId)?.name : 'คุณ'}จะอยู่เวรติดกัน 2 วัน</strong> ยืนยันว่ารับได้ใช่ไหม? กดปุ่มด้านล่างอีกครั้งเพื่อยืนยัน
                 </div>
               )}
 
@@ -2076,8 +2249,8 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
             {swapPosts.map(p => {
               const poster = getDoctor(p.posterId);
               const target = getDoctor(p.targetDoctorId);
-              const isMine = p.posterId === currentDoctorId;
-              const isTarget = p.targetDoctorId === currentDoctorId;
+              const isMine = p.posterId === effectiveDoctorId;
+              const isTarget = p.targetDoctorId === effectiveDoctorId;
               return (
                 <div key={p.id} className="border border-slate-200 bg-white rounded-xl p-3 flex items-center justify-between flex-wrap gap-2">
                   <div>
@@ -2087,7 +2260,7 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
                     <button onClick={() => cancelPost(p.id)} className="text-xs font-medium text-slate-500 hover:text-red-600 px-2 py-1">ยกเลิกคำขอ</button>
                   ) : isTarget ? (
                     <div className="flex items-center gap-2">
-                      <button onClick={() => declinePost(p)} className="text-xs font-medium text-slate-500 hover:text-red-600 px-2 py-1">ปฏิเสธ</button>
+                      <button onClick={() => declinePost(p, effectiveDoctorId)} className="text-xs font-medium text-slate-500 hover:text-red-600 px-2 py-1">ปฏิเสธ</button>
                       <button onClick={() => setAcceptTarget(p)} className="flex items-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg"><Check size={13} /> ยืนยัน</button>
                     </div>
                   ) : (
@@ -2112,23 +2285,32 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
       <ConfirmModal
         open={!!acceptTarget}
         title={acceptTarget?.type === 'swap' ? 'ยืนยันแลกเวรนี้?' : 'ยืนยันรับเวรนี้?'}
-        body={acceptTarget ? (
-          acceptTarget.type === 'sell'
-            ? `คุณจะรับเวรวันที่ ${formatDisplayDate(acceptTarget.date)} แทน ${getDoctor(acceptTarget.posterId)?.name} — ตารางเวรต้นแบบและโควตาจะอัปเดตทันที`
-            : `คุณจะมอบเวรวันที่ ${formatDisplayDate(acceptTarget.requestedDate)} ของคุณให้ ${getDoctor(acceptTarget.posterId)?.name} และรับเวรวันที่ ${formatDisplayDate(acceptTarget.date)} มาแทน — ตารางเวรปัจจุบันจะอัปเดตทันที (ตารางต้นแบบและโควตาไม่เปลี่ยน)`
-        ) : ''}
+        body={acceptTarget ? (() => {
+          const actorLabel = actingAsSomeoneElse ? getDoctor(effectiveDoctorId)?.name : 'คุณ';
+          return acceptTarget.type === 'sell'
+            ? `${actorLabel}จะรับเวรวันที่ ${formatDisplayDate(acceptTarget.date)} แทน ${getDoctor(acceptTarget.posterId)?.name} — ตารางเวรต้นแบบและโควตาจะอัปเดตทันที`
+            : `${actorLabel}จะมอบเวรวันที่ ${formatDisplayDate(acceptTarget.requestedDate)} ให้ ${getDoctor(acceptTarget.posterId)?.name} และรับเวรวันที่ ${formatDisplayDate(acceptTarget.date)} มาแทน — ตารางเวรปัจจุบันจะอัปเดตทันที (ตารางต้นแบบและโควตาไม่เปลี่ยน)`;
+        })() : ''}
         confirmLabel="ยืนยัน"
         onCancel={() => setAcceptTarget(null)}
-        onConfirm={() => { acceptPost(acceptTarget); setAcceptTarget(null); }}
+        onConfirm={() => { acceptPost(acceptTarget, effectiveDoctorId); setAcceptTarget(null); }}
       />
 
       <ConfirmModal
         open={buyAllConfirm}
         title="ซื้อทุกเวรที่เปิดอยู่?"
-        body={`คุณจะรับเวรทั้งหมด ${buyableSellPosts.length} วันที่เปิดขายอยู่ในเดือนนี้ (${buyableSellPosts.map(p => formatDisplayDate(p.date)).join(', ')}) — ตารางเวรต้นแบบและโควตาจะอัปเดตทันทีสำหรับทุกวัน`}
-        confirmLabel="ซื้อทั้งหมด"
+        body={`คุณจะรับเวรทั้งหมด ${buyableSellPosts.length} วันที่เปิดขายอยู่ (ทุกเดือน): ${buyableSellPosts.map(p => formatDisplayDate(p.date)).join(', ')} — ตารางเวรต้นแบบและโควตาจะอัปเดตทันทีสำหรับทุกวัน`}
+        confirmLabel={buyingAll ? 'กำลังซื้อ…' : 'ซื้อทั้งหมด'}
         onCancel={() => setBuyAllConfirm(false)}
-        onConfirm={() => { buyAllSellPosts(); setBuyAllConfirm(false); showToast(`ซื้อเวรสำเร็จ ${buyableSellPosts.length} รายการ`); }}
+        onConfirm={async () => {
+          if (buyingAll) return;
+          setBuyingAll(true);
+          const count = buyableSellPosts.length;
+          await buyAllSellPosts();
+          setBuyingAll(false);
+          setBuyAllConfirm(false);
+          showToast(`ซื้อเวรสำเร็จ ${count} รายการ`);
+        }}
       />
     </div>
   );
@@ -2141,7 +2323,7 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
 const DOW_LABELS = ['อา','จ','อ','พ','พฤ','ศ','ส'];
 const DOW_FULL   = ['อาทิตย์','จันทร์','อังคาร','พุธ','พฤหัสบดี','ศุกร์','เสาร์'];
 
-function RecurringUnavailablePanel({ year, month, onApply }) {
+function RecurringUnavailablePanel({ year, month, onApply, rules = [], onDelete }) {
   const [open, setOpen] = useState(false);
   const [dow, setDow] = useState(5); // default ศุกร์
   const [occ, setOcc] = useState([]); // [] = ทุกครั้ง
@@ -2164,8 +2346,27 @@ function RecurringUnavailablePanel({ year, month, onApply }) {
 
   const toggleOcc = (n) => setOcc(prev => prev.includes(n) ? prev.filter(x => x !== n) : [...prev, n].sort());
 
+  const describeRule = (r) => {
+    const occLabel = (!r.occurrences || r.occurrences.length === 0) ? 'ทุกครั้ง' : `ครั้งที่ ${r.occurrences.join(', ')}`;
+    return `ทุกวัน${DOW_FULL[r.dow]} (${occLabel})`;
+  };
+
+  const rulesList = rules.length > 0 && (
+    <div className="mb-3 space-y-1.5">
+      {rules.map(r => (
+        <div key={r.dow} className="flex items-center justify-between gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">
+          <span className="text-xs text-indigo-700 flex items-center gap-1.5"><span className="text-sm leading-none">🔁</span> {describeRule(r)}</span>
+          <button onClick={() => onDelete?.(r.dow)} className="text-xs text-slate-400 hover:text-red-600 hover:bg-red-50 px-2 py-1 rounded transition-colors flex items-center gap-1 shrink-0">
+            <Trash2 size={12} /> ลบ
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+
   if (!open) return (
     <div className="mb-4">
+      {rulesList}
       <button onClick={() => setOpen(true)} className="flex items-center gap-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-50 border border-indigo-200 px-3 py-1.5 rounded-lg transition-colors">
         <span className="text-base leading-none">🔁</span> เพิ่มวันไม่สะดวกประจำ (fix schedule)
       </button>
@@ -2174,6 +2375,7 @@ function RecurringUnavailablePanel({ year, month, onApply }) {
 
   return (
     <div className="mb-4 border border-indigo-200 rounded-xl bg-indigo-50/40 p-3">
+      {rulesList}
       <div className="flex items-center justify-between mb-3">
         <p className="text-xs font-medium text-indigo-700">เพิ่มวันไม่สะดวกประจำ</p>
         <button onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-600"><X size={14} /></button>
@@ -2215,7 +2417,7 @@ function RecurringUnavailablePanel({ year, month, onApply }) {
   );
 }
 
-function AdminUnavailablePanel({ year, month, doctors, allDoctors, unavailability, effectiveSchedule, holidaySet, masterSchedule, defaultDocId, unavailabilityConfirmed, onToggleConfirmed, isRecurringUnavailable, onToggle, onApplyRecurring, onClearMonth }) {
+function AdminUnavailablePanel({ year, month, doctors, allDoctors, unavailability, effectiveSchedule, holidaySet, masterSchedule, defaultDocId, unavailabilityConfirmed, onToggleConfirmed, isRecurringUnavailable, recurringRules, onToggle, onApplyRecurring, onDeleteRecurring, onClearMonth }) {
   // Default to the logged-in admin's own entry (falling back to the first
   // doctor in the roster if they're not in this month's active list) so
   // admin doesn't have to re-select themselves every time.
@@ -2261,6 +2463,8 @@ function AdminUnavailablePanel({ year, month, doctors, allDoctors, unavailabilit
             <RecurringUnavailablePanel
               year={year} month={month}
               onApply={(dow, occ) => onApplyRecurring(selectedDocId, dow, occ)}
+              rules={(recurringRules || []).filter(r => r.docId === selectedDocId)}
+              onDelete={(dow) => onDeleteRecurring(selectedDocId, dow)}
             />
             <div className="grid grid-cols-7 gap-1 mb-1">
               {WEEKDAY_LABELS.map((w, i) => <div key={w} className={`text-center text-xs font-semibold py-1 ${i === 0 || i === 6 ? 'text-rose-500' : 'text-slate-400'}`}>{w}</div>)}
