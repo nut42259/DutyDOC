@@ -740,6 +740,13 @@ export default function App() {
   const [marketplace, setMarketplace] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [queueState, setQueueStateLocal] = useState(null);
+  // Snapshot of the GLOBAL queue state as it was right before THIS month's
+  // own last generation (see handleMasterGenConfirm) — null if this month
+  // has never been generated. Needed so re-opening "จัดตารางเวรต้นแบบ" for an
+  // already-generated month starts from the right place: the current global
+  // queueState reflects wherever the LAST generation (which could be this
+  // very month) left the pointers, not "right before this month ran".
+  const [monthQueueSnapshot, setMonthQueueSnapshot] = useState(null);
   const [showMasterGen, setShowMasterGen] = useState(false);
   // Admin can pick a different doctor to highlight/recheck in the current &
   // master schedule calendars, instead of only ever seeing their own shifts
@@ -827,6 +834,7 @@ export default function App() {
       if (!data) {
         setMasterSchedule({}); setMasterOriginal({}); setCurrentSchedule({}); setCurrentScheduleGenerated(false); setScheduleStale(false); setScheduleViolations([]);
         setScheduleOverrides({}); setUnavailability(mergedUnavail); setUnavailabilityConfirmed([]); setActiveDoctorIds(null);
+        setMonthQueueSnapshot(null);
       } else {
         const master = data.masterSchedule || data.schedule || {}; // data.schedule = legacy fallback
         setMasterSchedule(master);
@@ -842,6 +850,7 @@ export default function App() {
         setUnavailability(mergedUnavail);
         setUnavailabilityConfirmed(data.unavailabilityConfirmed || []);
         setActiveDoctorIds(data.activeDoctorIds !== undefined ? data.activeDoctorIds : null);
+        setMonthQueueSnapshot(data.queueStateBeforeGen || null);
       }
     })();
   }, [year, month, queueState]);
@@ -859,9 +868,28 @@ export default function App() {
   }, []);
 
   const saveConfig = async (next) => { await storageSet('config', next); };
+  // Fresh-read-then-merge-patch the CURRENTLY LOADED month's record — never
+  // a blind whole-record overwrite built from local React state. This app
+  // has no realtime sync, so a tab can sit open while another device/tab
+  // writes to the same month in the meantime (a marketplace trade, another
+  // doctor's report, a master-schedule generation's queue snapshot, etc).
+  // Reading fresh right before writing means only the fields actually named
+  // in `patch` change — everything else (including fields this call site
+  // doesn't even know about) survives untouched.
   const saveMonth = async (patch) => {
-    const payload = { masterSchedule, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleViolations, scheduleStale, scheduleOverrides, unavailability, unavailabilityConfirmed, activeDoctorIds, ...patch };
-    await storageSet(monthKey(year, month), payload);
+    const mk = monthKey(year, month);
+    const raw = (await getMonthData(mk)) || {};
+    await setMonthData(mk, { ...raw, ...patch });
+  };
+  // Same fresh-read-then-merge pattern as saveMonth, but for callers that
+  // need to compute their patch FROM the fresh data too (e.g. toggling one
+  // doctor's unavailable date without clobbering everyone else's) rather
+  // than just writing fixed values.
+  const patchCurrentMonth = async (mutate) => {
+    const mk = monthKey(year, month);
+    const raw = (await getMonthData(mk)) || {};
+    const patch = mutate(raw);
+    await setMonthData(mk, { ...raw, ...patch });
   };
 
   const ensureActiveIncludes = (ids) => {
@@ -1025,7 +1053,19 @@ export default function App() {
     setCurrentSchedule({});
     setCurrentScheduleGenerated(false);
     setScheduleStale(false);
-    await saveMonth({ masterSchedule: nextMaster, masterOriginal: nextOriginal, scheduleOverrides: {}, currentSchedule: {}, currentScheduleGenerated: false, scheduleStale: false });
+    // Snapshot the GLOBAL queue state exactly as it was right before THIS
+    // month ever started generating — onto this month's own record. The
+    // queue pointers are shared/cumulative across all months, so both
+    // clearing this month later (resetMasterSchedule) AND simply reopening
+    // "จัดตารางเวรต้นแบบ" to regenerate it again (see monthQueueSnapshot use
+    // below) need this to resume from the prior month instead of wherever
+    // this month's own last run advanced the pointers to. Prefer the
+    // EXISTING snapshot if this month already has one (i.e. this isn't the
+    // first generation) so re-generating repeatedly never drifts the
+    // remembered "before" point forward.
+    const beforeGen = monthQueueSnapshot ?? queueState;
+    await saveMonth({ masterSchedule: nextMaster, masterOriginal: nextOriginal, scheduleOverrides: {}, currentSchedule: {}, currentScheduleGenerated: false, scheduleStale: false, queueStateBeforeGen: beforeGen });
+    setMonthQueueSnapshot(beforeGen);
     // Persist new queue state. newQueueState.debt already reflects only what
     // was actually consumed this generation (see MasterScheduleGenerator's
     // handleConfirm) — untouched debt (e.g. a loop type with no groups this
@@ -1074,6 +1114,17 @@ export default function App() {
   // current schedule) back to blank for this month. Unlike a re-upload, this
   // leaves the doctor roster untouched.
   const resetMasterSchedule = async () => {
+    // The shared queue pointers are cumulative across months — if this
+    // month's generation snapshotted "before" state (see
+    // handleMasterGenConfirm), roll the pointers back to it too, otherwise
+    // clearing + regenerating this same month would keep using wherever
+    // this generation had already advanced them to (i.e. skip ahead into
+    // the following month's territory) instead of resuming from the prior
+    // month, as reported.
+    const mk = monthKey(year, month);
+    const raw = (await getMonthData(mk)) || {};
+    const snapshot = raw.queueStateBeforeGen || null;
+
     setMasterSchedule({});
     setMasterOriginal({});
     setScheduleOverrides({});
@@ -1081,31 +1132,57 @@ export default function App() {
     setCurrentScheduleGenerated(false);
     setScheduleViolations([]);
     setScheduleStale(false);
-    await saveMonth({ masterSchedule: {}, masterOriginal: {}, scheduleOverrides: {}, currentSchedule: {}, currentScheduleGenerated: false, scheduleViolations: [], scheduleStale: false });
+    await saveMonth({ masterSchedule: {}, masterOriginal: {}, scheduleOverrides: {}, currentSchedule: {}, currentScheduleGenerated: false, scheduleViolations: [], scheduleStale: false, queueStateBeforeGen: null });
+    setMonthQueueSnapshot(null);
+
+    let queueMsg = '';
+    if (snapshot) {
+      setQueueStateLocal(snapshot);
+      await setQueueState(snapshot);
+      queueMsg = ' (คิวเวรถูกย้อนกลับไปก่อนการจัดครั้งนี้ด้วย)';
+    }
     await addNotification(
-      `ล้างตารางเวรต้นแบบของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว`,
-      `🗑️ ล้างตารางเวรต้นแบบของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว`
+      `ล้างตารางเวรต้นแบบของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว${queueMsg}`,
+      `🗑️ ล้างตารางเวรต้นแบบของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว${queueMsg}`
     );
-    showToast('ล้างตารางเวรต้นแบบแล้ว');
+    showToast(`ล้างตารางเวรต้นแบบแล้ว${queueMsg}`);
   };
 
   /* ---------- unavailability ---------- */
 
+  // Every unavailability edit below updates local state optimistically for
+  // instant feedback, then separately persists via patchCurrentMonth, which
+  // re-reads the record fresh right before writing and only ever touches
+  // unavailability-related fields. This app has no realtime sync, so a
+  // doctor's tab can sit open for a long time while a marketplace trade or
+  // another doctor's report lands in the meantime — the old code built its
+  // save payload from local React state (masterSchedule, unavailability,
+  // etc. all captured at click time), so a stale tab would blindly
+  // overwrite whatever had changed elsewhere since page load, silently
+  // erasing it. Never touching fields this code has no business changing
+  // (masterSchedule, scheduleOverrides, ...) and always re-reading
+  // unavailability itself fresh closes that gap.
   const toggleUnavailable = (date) => {
     if (!currentDoctorId) return;
-    const nextStale = currentScheduleGenerated ? true : scheduleStale;
+    const docId = currentDoctorId;
     setUnavailability(prev => {
-      const mine = prev[currentDoctorId] || [];
+      const mine = prev[docId] || [];
       const nextMine = mine.includes(date) ? mine.filter(d => d !== date) : [...mine, date].sort();
-      const next = { ...prev, [currentDoctorId]: nextMine };
-      setUnavailabilityConfirmed(prevConfirmed => {
-        const nextConfirmed = prevConfirmed.filter(id => id !== currentDoctorId); // editing again un-confirms
-        storageSet(monthKey(year, month), { masterSchedule, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleStale: nextStale, scheduleOverrides, unavailability: next, unavailabilityConfirmed: nextConfirmed, activeDoctorIds });
-        return nextConfirmed;
-      });
-      return next;
+      return { ...prev, [docId]: nextMine };
     });
+    setUnavailabilityConfirmed(prev => prev.filter(id => id !== docId));
+    const nextStale = currentScheduleGenerated ? true : scheduleStale;
     if (nextStale !== scheduleStale) setScheduleStale(nextStale);
+    patchCurrentMonth((raw) => {
+      const rawUnavail = raw.unavailability || {};
+      const mine = rawUnavail[docId] || [];
+      const nextMine = mine.includes(date) ? mine.filter(d => d !== date) : [...mine, date].sort();
+      return {
+        unavailability: { ...rawUnavail, [docId]: nextMine },
+        unavailabilityConfirmed: (raw.unavailabilityConfirmed || []).filter(id => id !== docId),
+        scheduleStale: raw.currentScheduleGenerated ? true : (raw.scheduleStale || false),
+      };
+    });
   };
 
   // docId defaults to the logged-in user's own id (used by the doctor-role
@@ -1114,10 +1191,11 @@ export default function App() {
   // "doctor" view of themselves.
   const toggleUnavailabilityConfirmed = (docId = currentDoctorId) => {
     if (!docId) return;
-    setUnavailabilityConfirmed(prev => {
-      const next = prev.includes(docId) ? prev.filter(id => id !== docId) : [...prev, docId];
-      storageSet(monthKey(year, month), { masterSchedule, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleStale, scheduleOverrides, unavailability, unavailabilityConfirmed: next, activeDoctorIds });
-      return next;
+    setUnavailabilityConfirmed(prev => prev.includes(docId) ? prev.filter(id => id !== docId) : [...prev, docId]);
+    patchCurrentMonth((raw) => {
+      const prevConfirmed = raw.unavailabilityConfirmed || [];
+      const next = prevConfirmed.includes(docId) ? prevConfirmed.filter(id => id !== docId) : [...prevConfirmed, docId];
+      return { unavailabilityConfirmed: next };
     });
   };
 
@@ -1160,13 +1238,17 @@ export default function App() {
     if (toAdd.length) {
       setUnavailability(prev => {
         const merged = [...new Set([...(prev[docId]||[]), ...toAdd])].sort();
-        const updated = { ...prev, [docId]: merged };
-        setUnavailabilityConfirmed(prevC => {
-          const nextC = prevC.filter(id => id !== docId);
-          storageSet(monthKey(year,month), { masterSchedule, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleStale: currentScheduleGenerated?true:scheduleStale, scheduleOverrides, unavailability:updated, unavailabilityConfirmed:nextC, activeDoctorIds });
-          return nextC;
-        });
-        return updated;
+        return { ...prev, [docId]: merged };
+      });
+      setUnavailabilityConfirmed(prev => prev.filter(id => id !== docId));
+      patchCurrentMonth((raw) => {
+        const rawUnavail = raw.unavailability || {};
+        const merged = [...new Set([...(rawUnavail[docId]||[]), ...toAdd])].sort();
+        return {
+          unavailability: { ...rawUnavail, [docId]: merged },
+          unavailabilityConfirmed: (raw.unavailabilityConfirmed || []).filter(id => id !== docId),
+          scheduleStale: raw.currentScheduleGenerated ? true : (raw.scheduleStale || false),
+        };
       });
     }
     setQueueStateLocal(prev => {
@@ -1191,11 +1273,11 @@ export default function App() {
       // month — leaves manually-toggled dates untouched.
       if (rule) {
         const toRemove = new Set(recurringDatesForMonth(year, month, dow, rule.occurrences));
-        setUnavailability(prevU => {
-          const mine = (prevU[docId] || []).filter(d => !toRemove.has(d));
-          const updated = { ...prevU, [docId]: mine };
-          storageSet(monthKey(year, month), { masterSchedule, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleStale, scheduleOverrides, unavailability: updated, unavailabilityConfirmed, activeDoctorIds });
-          return updated;
+        setUnavailability(prevU => ({ ...prevU, [docId]: (prevU[docId] || []).filter(d => !toRemove.has(d)) }));
+        patchCurrentMonth((raw) => {
+          const rawUnavail = raw.unavailability || {};
+          const mine = (rawUnavail[docId] || []).filter(d => !toRemove.has(d));
+          return { unavailability: { ...rawUnavail, [docId]: mine } };
         });
       }
       return next;
@@ -1205,17 +1287,18 @@ export default function App() {
 
   const clearUnavailableMonth = (docId) => {
     if (!docId) return;
-    setUnavailability(prev => {
-      const updated = { ...prev, [docId]: [] };
-      setUnavailabilityConfirmed(prevC => {
-        const nextC = prevC.filter(id => id !== docId);
-        storageSet(monthKey(year,month), { masterSchedule, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleStale: currentScheduleGenerated?true:scheduleStale, scheduleOverrides, unavailability:updated, unavailabilityConfirmed:nextC, activeDoctorIds });
-        return nextC;
-      });
-      return updated;
+    setUnavailability(prev => ({ ...prev, [docId]: [] }));
+    setUnavailabilityConfirmed(prev => prev.filter(id => id !== docId));
+    patchCurrentMonth((raw) => {
+      const rawUnavail = raw.unavailability || {};
+      return {
+        unavailability: { ...rawUnavail, [docId]: [] },
+        unavailabilityConfirmed: (raw.unavailabilityConfirmed || []).filter(id => id !== docId),
+        scheduleStale: raw.currentScheduleGenerated ? true : (raw.scheduleStale || false),
+      };
     });
     showToast('ล้างวันไม่สะดวกเดือนนี้แล้ว');
-  };;
+  };
 
   // Clear all unavailability for a doctor in the current month
 
@@ -1885,13 +1968,17 @@ export default function App() {
                   setUnavailability(prev => {
                     const mine = prev[docId] || [];
                     const next = mine.includes(date) ? mine.filter(d => d !== date) : [...mine, date].sort();
-                    const updated = { ...prev, [docId]: next };
-                    setUnavailabilityConfirmed(prevC => {
-                      const nextC = prevC.filter(id => id !== docId); // editing again un-confirms
-                      saveMonth({ unavailability: updated, unavailabilityConfirmed: nextC });
-                      return nextC;
-                    });
-                    return updated;
+                    return { ...prev, [docId]: next };
+                  });
+                  setUnavailabilityConfirmed(prev => prev.filter(id => id !== docId));
+                  patchCurrentMonth((raw) => {
+                    const rawUnavail = raw.unavailability || {};
+                    const mine = rawUnavail[docId] || [];
+                    const next = mine.includes(date) ? mine.filter(d => d !== date) : [...mine, date].sort();
+                    return {
+                      unavailability: { ...rawUnavail, [docId]: next },
+                      unavailabilityConfirmed: (raw.unavailabilityConfirmed || []).filter(id => id !== docId),
+                    };
                   });
                 }}
                 onApplyRecurring={(docId, dow, occ) => applyRecurringUnavailable(docId, dow, occ)}
@@ -1974,7 +2061,12 @@ export default function App() {
           doctors={doctors}
           activeDoctorIds={activeDoctorIds}
           holidays={holidays}
-          queueState={queueState}
+          // Prefer THIS month's own "before it was first generated" snapshot
+          // over the raw global queueState — otherwise re-opening this to
+          // regenerate an already-generated month would start from wherever
+          // that generation itself left the pointers (i.e. the following
+          // month's territory) instead of resuming from the prior month.
+          queueState={monthQueueSnapshot || queueState}
           onConfirm={handleMasterGenConfirm}
           onClose={() => setShowMasterGen(false)}
         />
