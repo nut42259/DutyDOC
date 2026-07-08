@@ -417,6 +417,30 @@ function MonthNav({ year, month, onShift }) {
   );
 }
 
+// Lets admin pick a doctor to ring/highlight in the calendar below (instead
+// of only ever seeing their own shifts ringed) — a quick way to recheck any
+// one person's schedule by eye.
+function DoctorHighlightPicker({ doctors, allDoctors, selectedId, onSelect }) {
+  const colorFor = (id) => getDoctorColor(allDoctors.findIndex(d => d.id === id));
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 mb-3">
+      <span className="text-xs text-slate-500 mr-1">เช็คเวรของ:</span>
+      <button onClick={() => onSelect(null)} className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${!selectedId ? 'bg-teal-600 text-white border-transparent' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+        ตัวฉันเอง
+      </button>
+      {doctors.map((d) => {
+        const color = colorFor(d.id);
+        const active = selectedId === d.id;
+        return (
+          <button key={d.id} onClick={() => onSelect(d.id)} className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors ${active ? `${color.soft} ${color.text} border-transparent ring-1 ring-offset-1 ring-slate-300` : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${color.bg}`} />{d.name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function UsageTable({ title, doctors, usage, original }) {
   return (
     <div className="mt-6 overflow-x-auto">
@@ -717,6 +741,10 @@ export default function App() {
   const [notifications, setNotifications] = useState([]);
   const [queueState, setQueueStateLocal] = useState(null);
   const [showMasterGen, setShowMasterGen] = useState(false);
+  // Admin can pick a different doctor to highlight/recheck in the current &
+  // master schedule calendars, instead of only ever seeing their own shifts
+  // ringed. null = show the admin's own (default).
+  const [recheckDoctorId, setRecheckDoctorId] = useState(null);
 
   const [toast, setToast] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
@@ -1363,6 +1391,74 @@ export default function App() {
     showToast('บันทึกเรียบร้อย');
   };
 
+  // Admin-only: yank a marketplace entry back out, whether it's still open
+  // or already completed. For a completed sell/swap this actually reverses
+  // the schedule effects acceptPost applied (restores master ownership /
+  // schedule overrides and best-effort undoes the auto-marked unavailability)
+  // rather than just flipping the status — otherwise "cancelling" a done
+  // trade would leave the shift with the wrong owner. For a still-open post
+  // there's nothing to undo on the schedule side (acceptPost never ran), so
+  // this reduces to the same fresh-read-then-write plumbing as acceptPost —
+  // reused here so admin can't clobber a concurrent device's write either.
+  const reversePost = async (post) => {
+    const loadedMonthKey = monthKey(year, month);
+    const nextStaleFor = (raw) => raw.currentScheduleGenerated ? true : (raw.scheduleStale || false);
+    const patchMonth = async (mk, mutate) => {
+      const raw = (await getMonthData(mk)) || {};
+      const patch = mutate(raw);
+      await setMonthData(mk, { ...raw, ...patch });
+      if (mk === loadedMonthKey) {
+        if ('masterSchedule' in patch) setMasterSchedule(patch.masterSchedule);
+        if ('scheduleOverrides' in patch) setScheduleOverrides(patch.scheduleOverrides);
+        if ('unavailability' in patch) setUnavailability(patch.unavailability);
+        if ('scheduleStale' in patch) setScheduleStale(patch.scheduleStale);
+      }
+    };
+
+    const dateMonthKey = monthKey(Number(post.date.slice(0, 4)), Number(post.date.slice(5, 7)) - 1);
+    if (post.type === 'sell') {
+      await patchMonth(dateMonthKey, (raw) => {
+        const nextMaster = { ...(raw.masterSchedule || raw.schedule || {}), [post.date]: post.posterId };
+        const nextUnavail = {};
+        Object.keys(raw.unavailability || {}).forEach(id => { nextUnavail[id] = [...(raw.unavailability[id] || [])]; });
+        if (nextUnavail[post.posterId]) nextUnavail[post.posterId] = nextUnavail[post.posterId].filter(d => d !== post.date);
+        return { masterSchedule: nextMaster, unavailability: nextUnavail, scheduleStale: nextStaleFor(raw) };
+      });
+    } else {
+      const reqMonthKey = monthKey(Number(post.requestedDate.slice(0, 4)), Number(post.requestedDate.slice(5, 7)) - 1);
+      await patchMonth(dateMonthKey, (raw) => {
+        const nextOverrides = { ...(raw.scheduleOverrides || {}) };
+        delete nextOverrides[post.date];
+        const nextUnavail = { ...(raw.unavailability || {}) };
+        if (nextUnavail[post.posterId]) nextUnavail[post.posterId] = nextUnavail[post.posterId].filter(d => d !== post.date);
+        return { scheduleOverrides: nextOverrides, unavailability: nextUnavail, scheduleStale: nextStaleFor(raw) };
+      });
+      await patchMonth(reqMonthKey, (raw) => {
+        const nextOverrides = { ...(raw.scheduleOverrides || {}) };
+        delete nextOverrides[post.requestedDate];
+        const nextUnavail = { ...(raw.unavailability || {}) };
+        if (nextUnavail[post.takerId]) nextUnavail[post.takerId] = nextUnavail[post.takerId].filter(d => d !== post.requestedDate);
+        return { scheduleOverrides: nextOverrides, unavailability: nextUnavail, scheduleStale: nextStaleFor(raw) };
+      });
+    }
+
+    const wasCompleted = post.status === 'completed';
+    setMarketplace(prevMarket => {
+      const next = prevMarket.map(p => p.id === post.id ? { ...p, status: 'cancelled' } : p);
+      storageSet('marketplace', next);
+      return next;
+    });
+
+    const posterName = getDoctor(post.posterId)?.name;
+    const takerName = post.takerId ? getDoctor(post.takerId)?.name : null;
+    const kind = post.type === 'sell' ? 'ขายเวร' : 'แลกเวร';
+    const msg = wasCompleted
+      ? `แอดมินยกเลิกรายการ${kind}วันที่ ${formatDisplayDate(post.date)} ที่สำเร็จแล้วระหว่าง ${posterName} กับ ${takerName} (คืนตารางเดิม)`
+      : `แอดมินยกเลิกประกาศ${kind}วันที่ ${formatDisplayDate(post.date)} ของ ${posterName}`;
+    addNotification(msg, `↩️ ${msg}`);
+    showToast('ยกเลิกรายการและคืนตารางเดิมแล้ว');
+  };
+
   /* ---------- render helpers ---------- */
 
   if (!currentUser) return <LoginScreen doctors={doctors} onLogin={(doc) => { setCurrentUser(doc); if (doc.role === 'admin') setActiveTab('overview'); refreshData(); }} />;
@@ -1381,7 +1477,9 @@ export default function App() {
   const masterUsage = computeUsage(activeDoctors, masterSchedule, holidaySet);
   const masterOriginalUsage = computeUsage(activeDoctors, masterOriginal, holidaySet);
   const hasMasterData = Object.values(masterSchedule || {}).some(Boolean);
-  const highlightDoctorId = currentDoctorId;  // highlight own shifts for everyone
+  // Doctors always see their own shifts ringed; admin can instead pick
+  // someone else to recheck via the picker in the current/master tabs.
+  const highlightDoctorId = (role === 'admin' && recheckDoctorId) ? recheckDoctorId : currentDoctorId;
   const doctorsWithShifts = activeDoctors.filter(d => (masterUsage[d.id]?.weekday || 0) + (masterUsage[d.id]?.holiday || 0) > 0);
   const pendingConfirmDocs = doctorsWithShifts.filter(d => !unavailabilityConfirmed.includes(d.id));
 
@@ -1391,14 +1489,14 @@ export default function App() {
         { id: 'current', label: 'ตารางเวรปัจจุบัน', icon: CalendarCheck },
         { id: 'master', label: 'ตารางเวรต้นแบบ', icon: CalendarIcon },
         { id: 'config', label: 'ตั้งค่า', icon: Settings },
-        { id: 'unavailable', label: 'วันไม่สะดวก', icon: UserCircle, badge: hasMasterData ? pendingConfirmDocs.length : 0 },
+        { id: 'unavailable', label: 'วันไม่สะดวก', icon: UserCircle, badge: (hasMasterData && !currentScheduleGenerated) ? pendingConfirmDocs.length : 0 },
         { id: 'marketplace', label: 'ตลาดแลกเปลี่ยน', icon: Repeat, badge: marketplace.filter(p => p.status === 'open' && (p.posterId === currentDoctorId || p.targetDoctorId === currentDoctorId)).length },
         { id: 'notifications', label: 'แจ้งเตือน', icon: Bell },
       ]
     : [
         { id: 'current', label: 'ตารางเวรปัจจุบัน', icon: CalendarCheck },
         { id: 'master', label: 'ตารางเวรต้นแบบ', icon: CalendarIcon },
-        { id: 'unavailable', label: 'แจ้งวันไม่สะดวก', icon: UserCircle, badge: (currentDoctorId && !hasMasterData && !unavailabilityConfirmed.includes(currentDoctorId)) ? 1 : 0 },
+        { id: 'unavailable', label: 'แจ้งวันไม่สะดวก', icon: UserCircle, badge: (currentDoctorId && !currentScheduleGenerated && !unavailabilityConfirmed.includes(currentDoctorId)) ? 1 : 0 },
         { id: 'marketplace', label: 'ตลาดแลกเปลี่ยนเวร', icon: Repeat },
         { id: 'notifications', label: 'แจ้งเตือน', icon: Bell },
       ];
@@ -1528,6 +1626,9 @@ export default function App() {
               <EmptyState icon={Shuffle} title="ยังไม่ได้จัดตารางเวรปัจจุบัน" hint={role === 'admin' ? 'รอให้ทุกคนแจ้งวันไม่สะดวกและยืนยันครบ (ดูสถานะด้านบน) แล้วกดปุ่ม "จัดเวร" เพื่อเริ่มจัด' : 'รอแอดมินกดจัดเวร'} />
             ) : (
               <>
+                {role === 'admin' && (
+                  <DoctorHighlightPicker doctors={activeDoctors} allDoctors={doctors} selectedId={recheckDoctorId} onSelect={setRecheckDoctorId} />
+                )}
                 <CalendarGrid
                   year={year} month={month} scheduleData={effectiveSchedule}
                   editable={role === 'admin'} onAssign={manualAssignCurrent}
@@ -1599,6 +1700,9 @@ export default function App() {
               <EmptyState icon={Users} title="ยังไม่มีแพทย์ที่อยู่เวรเดือนนี้" hint="ไปที่แท็บ 'ตั้งค่า' เพื่อเพิ่ม/เลือกแพทย์ที่อยู่เวรเดือนนี้ก่อน" />
             ) : (
               <>
+                {role === 'admin' && (
+                  <DoctorHighlightPicker doctors={activeDoctors} allDoctors={doctors} selectedId={recheckDoctorId} onSelect={setRecheckDoctorId} />
+                )}
                 <CalendarGrid
                   year={year} month={month} scheduleData={masterSchedule}
                   editable={role === 'admin'} onAssign={manualAssignMaster}
@@ -1689,15 +1793,17 @@ export default function App() {
               <EmptyState icon={UserCircle} title="คุณไม่มีเวรในเดือนนี้" hint={`${getDoctor(currentDoctorId)?.name} ไม่มีเวรอยู่ในตารางเวรต้นแบบของเดือน ${THAI_MONTHS[month]} ${year + 543} จึงไม่ต้องแจ้งวันไม่สะดวก`} />
             ) : (
               <>
-                {hasMasterData ? (
+                {currentScheduleGenerated ? (
                   <div className="bg-slate-100 border border-slate-200 text-slate-600 text-xs rounded-lg px-3 py-2 mb-4 flex items-start gap-2">
                     <Info size={14} className="mt-0.5 shrink-0" />
-                    แอดมินจัดตารางเวรต้นแบบของเดือนนี้แล้ว จึงล็อกไม่ให้แจ้ง/แก้ไขวันไม่สะดวกเพิ่มเติม — ถ้าวันที่คุณอยู่เวรดันไม่สะดวกขึ้นมา ให้ลงขาย/แลกเวรที่แท็บ "ตลาดแลกเปลี่ยนเวร" แทน
+                    แอดมินจัดตารางเวรปัจจุบันของเดือนนี้แล้ว จึงล็อกไม่ให้แจ้ง/แก้ไขวันไม่สะดวกเพิ่มเติม — ถ้าวันที่คุณอยู่เวรดันไม่สะดวกขึ้นมา ให้ลงขาย/แลกเวรที่แท็บ "ตลาดแลกเปลี่ยนเวร" แทน
                   </div>
                 ) : (
                   <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 mb-4 flex items-start gap-2">
                     <Info size={14} className="mt-0.5 shrink-0" />
-                    ยังไม่มีตารางเวรต้นแบบของเดือนนี้ — แจ้งวันไม่สะดวกล่วงหน้าได้เลย แล้วกดยืนยันด้านล่างเมื่อแจ้งครบ แอดมินจะรอให้ทุกคนยืนยันก่อนจัดตาราง เพื่อให้จำนวนเวรวันธรรมดา/วันหยุดของทุกคนตรงกับตารางต้นแบบ และไม่มีใครอยู่เวรติดกัน — เมื่อแอดมินจัดตารางต้นแบบแล้ว จะล็อกไม่ให้แก้ไขเพิ่มอีก
+                    {hasMasterData
+                      ? 'แจ้งวันไม่สะดวกล่วงหน้าได้เลย แล้วกดยืนยันด้านล่างเมื่อแจ้งครบ แอดมินจะรอให้ทุกคนยืนยันก่อนกดจัดเวร เพื่อให้จำนวนเวรวันธรรมดา/วันหยุดของทุกคนตรงกับตารางต้นแบบ และไม่มีใครอยู่เวรติดกัน — เมื่อแอดมินกดจัดเวร (ตารางเวรปัจจุบัน) แล้ว จะล็อกไม่ให้แก้ไขเพิ่มอีก'
+                      : 'ยังไม่มีตารางเวรต้นแบบของเดือนนี้ — แจ้งวันไม่สะดวกล่วงหน้าได้เลย แล้วกดยืนยันด้านล่างเมื่อแจ้งครบ — จะล็อกไม่ให้แก้ไขเพิ่มเมื่อแอดมินกดจัดเวร (ตารางเวรปัจจุบัน) เท่านั้น ไม่ใช่ตอนตั้งตารางต้นแบบ'}
                   </div>
                 )}
                 <RecurringUnavailablePanel
@@ -1707,7 +1813,7 @@ export default function App() {
                   onDelete={(dow) => deleteRecurringRule(currentDoctorId, dow)}
                 />
                 <div className="flex items-center justify-between mb-4"><MonthNav year={year} month={month} onShift={shiftMonth} /></div>
-                <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> {hasMasterData ? 'ดูวันไม่สะดวกที่แจ้งไว้' : 'คลิกวันที่เพื่อแจ้ง/ยกเลิกการแจ้งไม่สะดวก'} ({getDoctor(currentDoctorId)?.name}) · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-indigo-50 border border-indigo-300" /> ไม่สะดวกประจำ (จาก rule) · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-50 border border-red-300" /> จิ้มเลือกเอง</p>
+                <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> {currentScheduleGenerated ? 'ดูวันไม่สะดวกที่แจ้งไว้' : 'คลิกวันที่เพื่อแจ้ง/ยกเลิกการแจ้งไม่สะดวก'} ({getDoctor(currentDoctorId)?.name}) · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-indigo-50 border border-indigo-300" /> ไม่สะดวกประจำ (จาก rule) · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-50 border border-red-300" /> จิ้มเลือกเอง</p>
                 <div className="grid grid-cols-7 gap-1 mb-1">{WEEKDAY_LABELS.map((w, i) => <div key={w} className={`text-center text-xs font-body font-semibold py-1 ${i === 0 || i === 6 ? 'text-rose-500' : 'text-slate-400'}`}>{w}</div>)}</div>
                 <div className="grid grid-cols-7 gap-1">
                   {(() => {
@@ -1723,7 +1829,7 @@ export default function App() {
                       const onDuty = effectiveSchedule[date] === currentDoctorId;
                       const type = dayType(date, holidaySet);
                       return (
-                        <button key={date} disabled={hasMasterData} onClick={() => toggleUnavailable(date)} className={`rounded-lg border p-2 min-h-[56px] text-left transition-colors ${recurring ? 'bg-indigo-50 border-indigo-300' : marked ? 'bg-red-50 border-red-300' : type === 'holiday' ? 'bg-rose-100 border-rose-200 hover:border-teal-300' : 'bg-white border-slate-200 hover:border-teal-300'} ${onDuty ? 'ring-2 ring-offset-1 ring-teal-500' : ''} ${hasMasterData ? 'cursor-default opacity-80' : ''}`}>
+                        <button key={date} disabled={currentScheduleGenerated} onClick={() => toggleUnavailable(date)} className={`rounded-lg border p-2 min-h-[56px] text-left transition-colors ${recurring ? 'bg-indigo-50 border-indigo-300' : marked ? 'bg-red-50 border-red-300' : type === 'holiday' ? 'bg-rose-100 border-rose-200 hover:border-teal-300' : 'bg-white border-slate-200 hover:border-teal-300'} ${onDuty ? 'ring-2 ring-offset-1 ring-teal-500' : ''} ${currentScheduleGenerated ? 'cursor-default opacity-80' : ''}`}>
                           <div className="font-mono text-[11px] text-slate-500">{Number(date.slice(-2))}</div>
                           {onDuty && <div className="text-[9px] text-teal-600 font-medium mt-0.5">อยู่เวร</div>}
                           {marked && <div className={`text-[10px] font-medium mt-0.5 ${recurring ? 'text-indigo-500' : 'text-red-500'}`}>{recurring ? 'ไม่สะดวกประจำ' : 'ไม่สะดวก'}</div>}
@@ -1732,7 +1838,7 @@ export default function App() {
                     });
                   })()}
                 </div>
-                {!hasMasterData && (
+                {!currentScheduleGenerated && (
                   <>
                     <div className="mt-3 flex justify-end">
                       <button onClick={() => clearUnavailableMonth(currentDoctorId)} className="text-xs text-slate-400 hover:text-red-500 hover:bg-red-50 px-2 py-1 rounded-lg transition-colors flex items-center gap-1">
@@ -1803,6 +1909,7 @@ export default function App() {
             unavailability={unavailability} effectiveSchedule={effectiveSchedule} masterSchedule={masterSchedule}
             year={year} month={month} onShiftMonth={shiftMonth} showToast={showToast}
             createPost={createPost} createBulkSell={createBulkSell} cancelPost={cancelPost} declinePost={declinePost} acceptPost={acceptPost}
+            reversePost={reversePost}
           />
         )}
 
@@ -1926,7 +2033,7 @@ function SwapCalendar({ year, month, candidateDates, selected, holidaySet, getDo
   );
 }
 
-function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace, myAssignedDates, holidaySet, currentScheduleGenerated, unavailability, effectiveSchedule, masterSchedule, year, month, onShiftMonth, showToast, createPost, createBulkSell, cancelPost, declinePost, acceptPost }) {
+function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace, myAssignedDates, holidaySet, currentScheduleGenerated, unavailability, effectiveSchedule, masterSchedule, year, month, onShiftMonth, showToast, createPost, createBulkSell, cancelPost, declinePost, acceptPost, reversePost }) {
   // The month nav here drives the SAME global year/month as every other tab
   // (not a separate local picker) — so "my shifts this month" and swap
   // candidates always come from whichever month is actually loaded, with no
@@ -1939,6 +2046,7 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
   const [swapRequestedDate, setSwapRequestedDate] = useState('');
   const [swapSelfAdjacentConfirmed, setSwapSelfAdjacentConfirmed] = useState(false);
   const [acceptTarget, setAcceptTarget] = useState(null);
+  const [reverseTarget, setReverseTarget] = useState(null);
   const [buyAllConfirm, setBuyAllConfirm] = useState(false);
   const [buyingAll, setBuyingAll] = useState(false);
   // Which month to pick the REQUESTED (incoming) date from — defaults to
@@ -2000,7 +2108,8 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
   const otherDoctors = doctors.filter(d => d.id !== effectiveDoctorId);
   const sellPosts = marketplace.filter(p => p.type === 'sell' && p.status === 'open');
   const swapPosts = marketplace.filter(p => p.type === 'swap' && p.status === 'open');
-  const history = marketplace.filter(p => p.status !== 'open').slice(0, 8);
+  // Admin sees the full log (uncapped); doctors just see the recent few.
+  const history = role === 'admin' ? marketplace.filter(p => p.status !== 'open') : marketplace.filter(p => p.status !== 'open').slice(0, 8);
 
   // "ซื้อทุกเวร" spans every open post across all months (not just the one
   // currently loaded) — acceptPost fetches each post's own month fresh from
@@ -2165,6 +2274,9 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
                       ) : (!role || role === 'doctor') && target ? (
                         <span className="text-xs text-slate-400">รอ {target.name} ตอบรับ</span>
                       ) : null}
+                      {role === 'admin' && (
+                        <button onClick={() => setReverseTarget(p)} className="text-xs font-medium text-red-500 hover:text-red-700 px-2 py-1 border border-red-200 rounded-lg">ยกเลิก (admin)</button>
+                      )}
                     </div>
                   </div>
                 );
@@ -2256,16 +2368,21 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
                   <div>
                     <p className="text-sm font-medium text-slate-700">{poster?.name} ขอแลกวันที่ <span className="font-mono">{formatDisplayDate(p.date)}</span> ({dayTypeLabel(p.date, holidaySet)}) กับวันที่ <span className="font-mono">{formatDisplayDate(p.requestedDate)}</span> ({dayTypeLabel(p.requestedDate, holidaySet)}) ของ {target?.name}</p>
                   </div>
-                  {isMine ? (
-                    <button onClick={() => cancelPost(p.id)} className="text-xs font-medium text-slate-500 hover:text-red-600 px-2 py-1">ยกเลิกคำขอ</button>
-                  ) : isTarget ? (
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => declinePost(p, effectiveDoctorId)} className="text-xs font-medium text-slate-500 hover:text-red-600 px-2 py-1">ปฏิเสธ</button>
-                      <button onClick={() => setAcceptTarget(p)} className="flex items-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg"><Check size={13} /> ยืนยัน</button>
-                    </div>
-                  ) : (
-                    <span className="text-xs text-slate-400">รอ {target?.name} ตอบรับ</span>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {isMine ? (
+                      <button onClick={() => cancelPost(p.id)} className="text-xs font-medium text-slate-500 hover:text-red-600 px-2 py-1">ยกเลิกคำขอ</button>
+                    ) : isTarget ? (
+                      <>
+                        <button onClick={() => declinePost(p, effectiveDoctorId)} className="text-xs font-medium text-slate-500 hover:text-red-600 px-2 py-1">ปฏิเสธ</button>
+                        <button onClick={() => setAcceptTarget(p)} className="flex items-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg"><Check size={13} /> ยืนยัน</button>
+                      </>
+                    ) : (
+                      <span className="text-xs text-slate-400">รอ {target?.name} ตอบรับ</span>
+                    )}
+                    {role === 'admin' && (
+                      <button onClick={() => setReverseTarget(p)} className="text-xs font-medium text-red-500 hover:text-red-700 px-2 py-1 border border-red-200 rounded-lg">ยกเลิก (admin)</button>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -2275,9 +2392,16 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
 
       {history.length > 0 && (
         <div>
-          <p className="font-display font-semibold text-slate-800 mb-2 text-sm">ประวัติล่าสุด</p>
-          <div className="space-y-1.5">
-            {history.map(p => (<p key={p.id} className="text-xs text-slate-400">{formatDisplayDate(p.date)} · {p.type === 'sell' ? 'ขายเวร' : 'แลกเวร'} · {getDoctor(p.posterId)?.name} → {p.status === 'completed' ? (getDoctor(p.takerId)?.name || '-') : 'ยกเลิก/ปฏิเสธ'}</p>))}
+          <p className="font-display font-semibold text-slate-800 mb-2 text-sm">{role === 'admin' ? `Log การซื้อ/ขาย/แลกเวรทั้งหมด (${history.length})` : 'ประวัติล่าสุด'}</p>
+          <div className={`space-y-1.5 ${role === 'admin' ? 'max-h-96 overflow-y-auto pr-1' : ''}`}>
+            {history.map(p => (
+              <div key={p.id} className="flex items-center justify-between gap-2 text-xs text-slate-400">
+                <p>{formatDisplayDate(p.date)} · {p.type === 'sell' ? 'ขายเวร' : 'แลกเวร'} · {getDoctor(p.posterId)?.name} → {p.status === 'completed' ? (getDoctor(p.takerId)?.name || '-') : 'ยกเลิก/ปฏิเสธ'}</p>
+                {role === 'admin' && p.status === 'completed' && (
+                  <button onClick={() => setReverseTarget(p)} className="shrink-0 text-red-500 hover:text-red-700 font-medium px-2 py-0.5 border border-red-200 rounded">ยกเลิก (admin)</button>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -2294,6 +2418,25 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
         confirmLabel="ยืนยัน"
         onCancel={() => setAcceptTarget(null)}
         onConfirm={() => { acceptPost(acceptTarget, effectiveDoctorId); setAcceptTarget(null); }}
+      />
+
+      <ConfirmModal
+        open={!!reverseTarget}
+        title={reverseTarget?.status === 'completed' ? 'ยกเลิกรายการที่สำเร็จแล้ว?' : 'ยกเลิกประกาศนี้?'}
+        body={reverseTarget ? (() => {
+          const posterName = getDoctor(reverseTarget.posterId)?.name;
+          const takerName = reverseTarget.takerId ? getDoctor(reverseTarget.takerId)?.name : null;
+          if (reverseTarget.status !== 'completed') {
+            return `จะยกเลิกประกาศ${reverseTarget.type === 'sell' ? 'ขายเวร' : 'แลกเวร'}วันที่ ${formatDisplayDate(reverseTarget.date)} ของ ${posterName}`;
+          }
+          return reverseTarget.type === 'sell'
+            ? `รายการนี้สำเร็จไปแล้ว: ${takerName} รับเวรวันที่ ${formatDisplayDate(reverseTarget.date)} ต่อจาก ${posterName} — การยกเลิกจะคืนเวรวันนี้ให้ ${posterName} ในตารางเวรต้นแบบทันที (โปรดแจ้งทั้งสองฝ่ายให้ทราบด้วย)`
+            : `รายการนี้สำเร็จไปแล้ว: ${posterName} แลกกับ ${takerName} วันที่ ${formatDisplayDate(reverseTarget.date)} ↔ ${formatDisplayDate(reverseTarget.requestedDate)} — การยกเลิกจะคืนตารางเวรปัจจุบันของทั้งสองวันกลับเป็นเดิมทันที (โปรดแจ้งทั้งสองฝ่ายให้ทราบด้วย)`;
+        })() : ''}
+        confirmLabel="ยกเลิก/คืนตาราง"
+        danger
+        onCancel={() => setReverseTarget(null)}
+        onConfirm={() => { reversePost(reverseTarget); setReverseTarget(null); }}
       />
 
       <ConfirmModal
