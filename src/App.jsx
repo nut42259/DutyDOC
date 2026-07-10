@@ -125,7 +125,7 @@ function parseFlexibleDate(val) {
 // pathological month can't hang the browser — if the budget runs out we
 // genuinely don't know whether a solution exists (as opposed to `solved:
 // false` reached without hitting the budget, which proves none exists).
-function exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSchedule, holidaySet, budget }) {
+function exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSchedule, holidaySet, budget, boundaryBlocked = () => false }) {
   const remaining = {};
   doctors.forEach(d => { remaining[d.id] = { ...(quota[d.id] || { weekday: 0, holiday: 0 }) }; });
   const assign = {};
@@ -146,7 +146,7 @@ function exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSche
     const nominal = masterSchedule[date];
     return doctors
       .map(d => d.id)
-      .filter(id => (remaining[id]?.[type] || 0) > 0 && !unavailSet[id].has(date) && !neighborsOf(date).some(n => assign[n] === id))
+      .filter(id => (remaining[id]?.[type] || 0) > 0 && !unavailSet[id].has(date) && !neighborsOf(date).some(n => assign[n] === id) && !boundaryBlocked(date, id))
       .sort((a, b) => {
         // Preference only (doesn't affect completeness): try the master's
         // nominal owner first, then whoever needs shifts of this type most.
@@ -208,11 +208,21 @@ function exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSche
 // people still end up at their original quota. Only when no such chain of
 // relocations exists is a date recorded as a genuine violation (the nominal
 // owner is then kept in place as a last resort).
-function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailability, holidaySet }) {
+// boundaryPrevId/boundaryNextId = whoever worked the day immediately before
+// day 1 / immediately after the last day, in the NEIGHBORING month's own
+// schedule (a month this generation otherwise never looks at). Without
+// these, nothing stops the same doctor landing on both sides of a month
+// boundary — the normal same-month neighbor check has no way to see a day
+// that isn't part of `dates` at all.
+function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailability, holidaySet, boundaryPrevId = null, boundaryNextId = null }) {
   const total = daysInMonth(year, month);
   const dates = Array.from({ length: total }, (_, i) => isoDate(year, month, i + 1));
   const dateIndex = {};
   dates.forEach((d, i) => { dateIndex[d] = i; });
+  const firstDate = dates[0], lastDate = dates[dates.length - 1];
+  const boundaryBlocked = (date, id) =>
+    (date === firstDate && boundaryPrevId && id === boundaryPrevId) ||
+    (date === lastDate && boundaryNextId && id === boundaryNextId);
 
   const hasMasterData = Object.values(masterSchedule || {}).some(Boolean);
   if (!hasMasterData) {
@@ -228,7 +238,7 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
 
   // Try for a mathematically perfect assignment first. Whenever one exists,
   // this is guaranteed to find it — no heuristic can promise that.
-  const exhaustive = exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSchedule, holidaySet, budget: 300000 });
+  const exhaustive = exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSchedule, holidaySet, budget: 300000, boundaryBlocked });
   if (exhaustive.solved) {
     return { schedule: exhaustive.assign, violations: [] };
   }
@@ -277,7 +287,7 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
 
     const candidates = doctors
       .map(d => d.id)
-      .filter(id => id !== excludeDoctor && !unavailSet[id].has(date))
+      .filter(id => id !== excludeDoctor && !unavailSet[id].has(date) && !boundaryBlocked(date, id))
       .sort((a, b) => {
         if (a === nominal) return -1;
         if (b === nominal) return 1;
@@ -324,10 +334,12 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
   }
 
   // Seed with the master schedule — already balanced & (assuming a sane
-  // master) adjacency-safe — then patch every date whose owner can't work.
+  // master) adjacency-safe — then patch every date whose owner can't work
+  // (including a boundary date whose nominal owner conflicts with the
+  // neighboring month's actual assignment).
   dates.forEach(date => {
     const nominal = masterSchedule[date];
-    if (nominal && remaining[nominal] && !unavailSet[nominal].has(date)) {
+    if (nominal && remaining[nominal] && !unavailSet[nominal].has(date) && !boundaryBlocked(date, nominal)) {
       place(date, nominal, dayType(date, holidaySet));
     }
   });
@@ -343,9 +355,9 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
       // couldn't be made to satisfy every rule (recorded above so the admin
       // can see exactly which dates need manual attention).
       const nominal = masterSchedule[date];
-      const fallback = nominal && remaining[nominal]
+      const fallback = nominal && remaining[nominal] && !boundaryBlocked(date, nominal)
         ? nominal
-        : (doctors.find(d => !neighborsOf(date).some(n => assign[n] === d.id))?.id ?? doctors[0]?.id ?? null);
+        : (doctors.find(d => !neighborsOf(date).some(n => assign[n] === d.id) && !boundaryBlocked(date, d.id))?.id ?? doctors[0]?.id ?? null);
       if (fallback) {
         const type = dayType(date, holidaySet);
         assign[date] = fallback;
@@ -1090,7 +1102,26 @@ export default function App() {
   };
 
   const generateCurrentSchedule = async () => {
-    const { schedule: next, violations } = buildCurrentSchedule({ doctors: activeDoctors, year, month, masterSchedule, unavailability, holidaySet });
+    // Cross-month adjacency: who worked the day immediately before/after
+    // this month, in THAT month's own effective schedule (current schedule
+    // if it's been generated, else its master schedule as a best-effort
+    // fallback) — fetched fresh since neither neighboring month is loaded
+    // into this session's state. Without this, nothing stops the exact same
+    // doctor landing on both the last day of one month and the first day of
+    // the next.
+    const prevYM = month === 0 ? { y: year - 1, m: 11 } : { y: year, m: month - 1 };
+    const nextYM = month === 11 ? { y: year + 1, m: 0 } : { y: year, m: month + 1 };
+    const [prevMonthData, nextMonthData] = await Promise.all([
+      getMonthData(monthKey(prevYM.y, prevYM.m)),
+      getMonthData(monthKey(nextYM.y, nextYM.m)),
+    ]);
+    const effectiveOf = (data) => !data ? {} : (data.currentScheduleGenerated
+      ? { ...(data.currentSchedule || {}), ...(data.scheduleOverrides || {}) }
+      : (data.masterSchedule || data.schedule || {}));
+    const boundaryPrevId = prevMonthData ? (effectiveOf(prevMonthData)[isoDate(prevYM.y, prevYM.m, daysInMonth(prevYM.y, prevYM.m))] || null) : null;
+    const boundaryNextId = nextMonthData ? (effectiveOf(nextMonthData)[isoDate(nextYM.y, nextYM.m, 1)] || null) : null;
+
+    const { schedule: next, violations } = buildCurrentSchedule({ doctors: activeDoctors, year, month, masterSchedule, unavailability, holidaySet, boundaryPrevId, boundaryNextId });
     const violationList = [...violations].sort();
     setCurrentSchedule(next);
     setScheduleViolations(violationList);
