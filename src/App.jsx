@@ -429,6 +429,61 @@ function MonthNav({ year, month, onShift }) {
   );
 }
 
+// Calendar-grid picker for marking national holidays (settings tab). Keeps
+// its own month/year in local state — unlike the old single-date <input
+// type="date"> + "เพิ่ม" button flow, navigating to a future month and
+// clicking through several (often consecutive) days no longer resets back
+// to the current month between each one, and each click toggles that date
+// directly — no separate add step per day.
+function HolidayPicker({ year, month, holidays, onToggle }) {
+  const [viewYear, setViewYear] = useState(year);
+  const [viewMonth, setViewMonth] = useState(month);
+  const holidaySet = new Set(holidays);
+  const total = daysInMonth(viewYear, viewMonth);
+  const lead = new Date(viewYear, viewMonth, 1).getDay();
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push(null);
+  for (let d = 1; d <= total; d++) cells.push(isoDate(viewYear, viewMonth, d));
+
+  const shiftView = (delta) => {
+    let m = viewMonth + delta, y = viewYear;
+    if (m < 0) { m = 11; y -= 1; } else if (m > 11) { m = 0; y += 1; }
+    setViewMonth(m); setViewYear(y);
+  };
+
+  return (
+    <div className="border border-slate-200 rounded-xl p-3 bg-white max-w-xs">
+      <div className="flex items-center justify-between mb-2">
+        <button type="button" onClick={() => shiftView(-1)} className="p-1 rounded hover:bg-slate-100"><ChevronLeft size={16} /></button>
+        <span className="text-sm font-medium text-slate-700">{THAI_MONTHS[viewMonth]} {viewYear + 543}</span>
+        <button type="button" onClick={() => shiftView(1)} className="p-1 rounded hover:bg-slate-100"><ChevronRight size={16} /></button>
+      </div>
+      <div className="grid grid-cols-7 gap-1 mb-1">
+        {WEEKDAY_LABELS.map((w, i) => <div key={w} className={`text-center text-[10px] font-semibold ${i === 0 || i === 6 ? 'text-rose-500' : 'text-slate-400'}`}>{w}</div>)}
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {cells.map((date, i) => {
+          if (!date) return <div key={`b-${i}`} />;
+          const dow = new Date(viewYear, viewMonth, Number(date.slice(-2))).getDay();
+          const isWeekend = dow === 0 || dow === 6;
+          const isHoliday = holidaySet.has(date);
+          const dayNum = Number(date.slice(-2));
+          return (
+            <button key={date} type="button" onClick={() => onToggle(date)} disabled={isWeekend}
+              title={isWeekend ? 'เสาร์-อาทิตย์นับเป็นวันหยุดอัตโนมัติแล้ว' : ''}
+              className={`rounded-md border text-[11px] font-mono py-1.5 transition-colors
+                ${isWeekend ? 'bg-red-50 border-red-100 text-rose-300 cursor-default'
+                  : isHoliday ? 'bg-rose-500 border-rose-500 text-white hover:bg-rose-600'
+                  : 'bg-white border-slate-200 text-slate-600 hover:border-teal-400 cursor-pointer'}`}>
+              {dayNum}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Lets admin pick a doctor to ring/highlight in the calendar below (instead
 // of only ever seeing their own shifts ringed) — a quick way to recheck any
 // one person's schedule by eye.
@@ -1063,6 +1118,33 @@ export default function App() {
   // triggers this explicitly (via "จัดเวร") once the master schedule and
   // everyone's availability have settled, rather than it recomputing itself
   // in the background on every small change.
+  // Whenever a month's master schedule is generated (first time or a re-do
+  // after clearing), any LATER month that was already generated has its own
+  // "before" queue snapshot computed from whatever the shared queue state
+  // was prior to THIS change — now stale, regardless of what its last-used
+  // date happens to say. Comparing dates alone can't catch this: adding or
+  // removing a holiday changes how many slots a month actually consumes, so
+  // the same calendar date can end up mapped to a different queue position
+  // than before. Rather than try to detect that, just invalidate outright —
+  // if a later month's snapshot is gone, clearing it later won't roll the
+  // queue back to anything (safe default) instead of silently restoring a
+  // now-wrong value. Scans a bounded 12-month window forward; nobody
+  // realistically pre-generates further ahead than that.
+  const invalidateDownstreamSnapshots = async (afterYear, afterMonth) => {
+    const HORIZON = 12;
+    const keys = [];
+    let y = afterYear, m = afterMonth;
+    for (let i = 0; i < HORIZON; i++) {
+      m += 1;
+      if (m > 11) { m = 0; y += 1; }
+      keys.push(monthKey(y, m));
+    }
+    const rows = await Promise.all(keys.map(mk => getMonthData(mk)));
+    await Promise.all(rows.map((raw, i) =>
+      (raw && raw.queueStateBeforeGen) ? setMonthData(keys[i], { ...raw, queueStateBeforeGen: null }) : null
+    ));
+  };
+
   const handleMasterGenConfirm = async (schedule, newQueueState) => {
     // schedule = { [isoDate]: doctorId }
     // Write it into masterSchedule and masterOriginal (treated as a fresh admin-set baseline)
@@ -1093,6 +1175,7 @@ export default function App() {
     // month) must carry forward, not be wiped here too.
     setQueueStateLocal(newQueueState);
     await setQueueState(newQueueState);
+    await invalidateDownstreamSnapshots(year, month);
     await addNotification(
       `จัดตารางเวรต้นแบบ ${['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'][month]} ${year + 543} สำเร็จแล้ว`,
       `📅 จัดตารางเวรต้นแบบ ${['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'][month]} ${year + 543} สำเร็จแล้ว`
@@ -1175,11 +1258,48 @@ export default function App() {
     await saveMonth({ masterSchedule: {}, masterOriginal: {}, scheduleOverrides: {}, currentSchedule: {}, currentScheduleGenerated: false, scheduleViolations: [], scheduleStale: false, queueStateBeforeGen: null });
     setMonthQueueSnapshot(null);
 
+    // Roll the shared queue pointers back to this month's snapshot — but
+    // per loop and only ever BACKWARD. A blind whole-state restore breaks
+    // when several months are cleared oldest-first: clearing Nov correctly
+    // rewinds to post-Oct, but then clearing Dec would restore DEC's
+    // snapshot (= post-Nov) and shove the queue forward past November
+    // again. So each loop's pointer is restored only if the snapshot's
+    // lastDate for that loop isn't LATER than where the queue currently
+    // stands; and only pointer/lastDate/debt are touched — recurring rules
+    // and custom queue orders always keep their current values (they're
+    // settings, not queue position, and may have changed since the
+    // snapshot was taken).
     let queueMsg = '';
     if (snapshot) {
-      setQueueStateLocal(snapshot);
-      await setQueueState(snapshot);
-      queueMsg = ' (คิวเวรถูกย้อนกลับไปก่อนการจัดครั้งนี้ด้วย)';
+      const cur = await getQueueState(); // fresh — not this tab's React copy
+      const LOOP_KEYS = ['weekday', 'h12', 'h3', 'h4', 'h5'];
+      const DEBT_KEY = { weekday: 'WDQ', h12: 'H12Q', h3: 'H3Q', h4: 'H4Q', h5: 'H5Q' };
+      const restoredKeys = LOOP_KEYS.filter(k => {
+        const snapLast = snapshot.lastDate?.[k] || null;
+        const curLast = cur.lastDate?.[k] || null;
+        return !(snapLast && curLast && snapLast > curLast);
+      });
+      if (restoredKeys.length > 0) {
+        const next = { ...cur, lastDate: { ...(cur.lastDate || {}) } };
+        restoredKeys.forEach(k => {
+          next[k] = snapshot[k];
+          next.lastDate[k] = snapshot.lastDate?.[k] || null;
+        });
+        const nextDebt = {};
+        new Set([...Object.keys(cur.debt || {}), ...Object.keys(snapshot.debt || {})]).forEach(docId => {
+          const entry = {};
+          LOOP_KEYS.forEach(k => {
+            const dk = DEBT_KEY[k];
+            const v = restoredKeys.includes(k) ? snapshot.debt?.[docId]?.[dk] : cur.debt?.[docId]?.[dk];
+            if (v) entry[dk] = v;
+          });
+          if (Object.keys(entry).length > 0) nextDebt[docId] = entry;
+        });
+        next.debt = nextDebt;
+        setQueueStateLocal(next);
+        await setQueueState(next);
+        queueMsg = ' (คิวเวรถูกย้อนกลับไปก่อนการจัดครั้งนี้ด้วย)';
+      }
     }
     await addNotification(
       `ล้างตารางเวรต้นแบบของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว${queueMsg}`,
@@ -1893,12 +2013,12 @@ export default function App() {
 
             <div>
               <p className="font-display font-semibold text-slate-800 mb-2">วันหยุดนักขัตฤกษ์เพิ่มเติม</p>
-              <p className="text-xs text-slate-400 mb-2">เสาร์-อาทิตย์นับเป็นวันหยุดโดยอัตโนมัติแล้ว เพิ่มเฉพาะวันหยุดนักขัตฤกษ์อื่น ๆ</p>
-              <div className="flex items-center gap-2 mb-2">
-                <input type="date" id="holidayInput" className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm font-mono" />
-                <button onClick={() => { const el = document.getElementById('holidayInput'); if (el && el.value) { updateHolidays([...new Set([...holidays, el.value])].sort()); el.value = ''; } }} className="flex items-center gap-1 text-xs font-medium text-teal-700 hover:bg-teal-50 px-2 py-1.5 rounded-lg"><Plus size={14} /> เพิ่ม</button>
-              </div>
-              <div className="flex flex-wrap gap-1.5">
+              <p className="text-xs text-slate-400 mb-2">เสาร์-อาทิตย์นับเป็นวันหยุดโดยอัตโนมัติแล้ว เพิ่มเฉพาะวันหยุดนักขัตฤกษ์อื่น ๆ — คลิกวันที่เพื่อเพิ่ม/ลบได้เลย เลื่อนเดือนแล้วคลิกได้หลายวันติดกันโดยไม่ต้องเลื่อนกลับมาที่เดือนปัจจุบันใหม่ทุกครั้ง</p>
+              <HolidayPicker
+                year={year} month={month} holidays={holidays}
+                onToggle={(date) => updateHolidays(holidays.includes(date) ? holidays.filter(h => h !== date) : [...holidays, date].sort())}
+              />
+              <div className="flex flex-wrap gap-1.5 mt-2">
                 {holidays.map(h => (<span key={h} className="flex items-center gap-1 bg-rose-50 text-rose-600 text-xs font-mono px-2 py-1 rounded-full">{formatDisplayDate(h)}<button onClick={() => updateHolidays(holidays.filter(x => x !== h))}><X size={12} /></button></span>))}
               </div>
             </div>
