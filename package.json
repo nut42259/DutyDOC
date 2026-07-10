@@ -13,6 +13,7 @@
     "@supabase/supabase-js": "^2.110.0",
     "autoprefixer": "^10.5.2",
     "bcryptjs": "^3.0.3",
+    "html2canvas": "^1.4.1",
     "lucide-react": "^1.23.0",
     "postcss": "^8.5.16",
     "react": "^19.2.7",

@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import {
   Calendar as CalendarIcon, CalendarCheck, Upload, Users, Repeat, Bell, Plus, X, Check,
   ChevronLeft, ChevronRight, Settings, UserCircle, Trash2,
-  MessageCircle, Info, ArrowRightLeft, Tag, Shuffle, RotateCcw, LayoutDashboard
+  MessageCircle, Info, ArrowRightLeft, Tag, Shuffle, RotateCcw, LayoutDashboard, Download
 } from 'lucide-react';
 import {
   getConfig, setConfig, getMonthData, setMonthData,
@@ -24,19 +24,26 @@ const THAI_MONTHS = ['มกราคม','กุมภาพันธ์','ม�
 const WEEKDAY_LABELS = ['อา','จ','อ','พ','พฤ','ศ','ส'];
 const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
+// Picked to keep every pair perceptually distinct at a glance — the old
+// palette put sky next to cyan (both light blue), which is exactly what
+// landed two similarly-named doctors (ณัชพล/ณัฐพล) on near-identical colors.
+// This set spaces hues out across the wheel (skipping close neighbors like
+// teal/cyan/sky, green/emerald/lime, and violet/purple/fuchsia clusters) and
+// ends on a dark neutral rather than a 12th warm hue, since red/pink/rose
+// all crowd the same corner of the wheel too.
 const DOCTOR_PALETTE = [
-  { bg: 'bg-teal-600', soft: 'bg-teal-50', text: 'text-teal-700', ring: 'ring-teal-500' },
-  { bg: 'bg-indigo-600', soft: 'bg-indigo-50', text: 'text-indigo-700', ring: 'ring-indigo-500' },
-  { bg: 'bg-rose-600', soft: 'bg-rose-50', text: 'text-rose-700', ring: 'ring-rose-500' },
-  { bg: 'bg-amber-600', soft: 'bg-amber-50', text: 'text-amber-700', ring: 'ring-amber-500' },
-  { bg: 'bg-emerald-600', soft: 'bg-emerald-50', text: 'text-emerald-700', ring: 'ring-emerald-500' },
-  { bg: 'bg-sky-600', soft: 'bg-sky-50', text: 'text-sky-700', ring: 'ring-sky-500' },
-  { bg: 'bg-fuchsia-600', soft: 'bg-fuchsia-50', text: 'text-fuchsia-700', ring: 'ring-fuchsia-500' },
+  { bg: 'bg-red-600', soft: 'bg-red-50', text: 'text-red-700', ring: 'ring-red-500' },
   { bg: 'bg-orange-600', soft: 'bg-orange-50', text: 'text-orange-700', ring: 'ring-orange-500' },
+  { bg: 'bg-amber-600', soft: 'bg-amber-50', text: 'text-amber-700', ring: 'ring-amber-500' },
   { bg: 'bg-lime-600', soft: 'bg-lime-50', text: 'text-lime-700', ring: 'ring-lime-500' },
+  { bg: 'bg-emerald-600', soft: 'bg-emerald-50', text: 'text-emerald-700', ring: 'ring-emerald-500' },
   { bg: 'bg-cyan-600', soft: 'bg-cyan-50', text: 'text-cyan-700', ring: 'ring-cyan-500' },
+  { bg: 'bg-blue-600', soft: 'bg-blue-50', text: 'text-blue-700', ring: 'ring-blue-500' },
+  { bg: 'bg-indigo-600', soft: 'bg-indigo-50', text: 'text-indigo-700', ring: 'ring-indigo-500' },
   { bg: 'bg-violet-600', soft: 'bg-violet-50', text: 'text-violet-700', ring: 'ring-violet-500' },
+  { bg: 'bg-fuchsia-600', soft: 'bg-fuchsia-50', text: 'text-fuchsia-700', ring: 'ring-fuchsia-500' },
   { bg: 'bg-pink-600', soft: 'bg-pink-50', text: 'text-pink-700', ring: 'ring-pink-500' },
+  { bg: 'bg-slate-700', soft: 'bg-slate-100', text: 'text-slate-700', ring: 'ring-slate-500' },
 ];
 const getDoctorColor = (idx) => DOCTOR_PALETTE[idx % DOCTOR_PALETTE.length];
 
@@ -757,7 +764,7 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
           return (
             <div
               key={date}
-              className={`relative rounded-lg border p-1.5 min-h-[64px] flex flex-col gap-1 ${type === 'holiday' ? 'bg-rose-100 border-rose-200' : 'bg-white border-slate-200'} ${diverged ? 'border-l-4 border-l-sky-400' : ''} ${isMine ? `ring-2 ring-offset-1 ${color.ring}` : ''} ${editable ? 'cursor-pointer hover:border-teal-300' : ''}`}
+              className={`relative rounded-lg border p-1.5 min-h-[64px] min-w-0 flex flex-col gap-1 ${type === 'holiday' ? 'bg-rose-100 border-rose-200' : 'bg-white border-slate-200'} ${diverged ? 'border-l-4 border-l-sky-400' : ''} ${isMine ? `ring-2 ring-offset-1 ${color.ring}` : ''} ${editable ? 'cursor-pointer hover:border-teal-300' : ''}`}
               onClick={() => editable && setEditingDate(date)}
               title={titleParts.join(' · ')}
             >
@@ -772,9 +779,20 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                   {selectableDoctors.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               ) : doc ? (
-                <div className="flex flex-col gap-0.5">
-                  <span className={`text-[11px] font-body font-medium rounded px-1 py-0.5 truncate ${color.soft} ${color.text}`}>{doc.name}</span>
-                  {traded && <span className="text-[9px] font-body text-slate-400 line-through truncate px-1">{getDoctor(origId)?.name || '-'}</span>}
+                // min-w-0 overrides flex items' default "won't shrink below
+                // content" sizing, and w-full+block makes each name span's
+                // width an explicit fact rather than something derived from
+                // flex layout — needed because html2canvas doesn't reliably
+                // replicate implicit flexbox shrink/truncate behavior, so a
+                // long name would render past the cell's edge in an exported
+                // image even though it looks fine (truncated) in the browser.
+                <div className="flex flex-col gap-0.5 min-w-0">
+                  {/* leading-relaxed + py-1 (not py-0.5) give Thai descenders
+                      (ฐ, ญ, ...) enough vertical room inside the clipped
+                      (overflow-hidden, for truncate) box — too tight a line
+                      box was cutting their tails off at the bottom edge. */}
+                  <span className={`block w-full text-center text-[11px] leading-relaxed font-body font-medium rounded px-1 py-1 truncate ${color.soft} ${color.text}`}>{doc.name}</span>
+                  {traded && <span className="block w-full text-center text-[9px] leading-relaxed font-body text-slate-400 line-through truncate px-1">{getDoctor(origId)?.name || '-'}</span>}
                 </div>
               ) : (
                 <span className="text-[10px] font-body text-slate-300">ยังไม่กำหนด</span>
@@ -831,6 +849,43 @@ export default function App() {
 
   const [toast, setToast] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+  // Wraps the current-schedule header + calendar so "บันทึกตารางเวรปัจจุบัน"
+  // can capture exactly that region (not the whole page, not the nav
+  // buttons above it) as an image.
+  const currentScheduleCaptureRef = useRef(null);
+  const [savingScheduleImage, setSavingScheduleImage] = useState(false);
+  const saveCurrentScheduleImage = async () => {
+    const el = currentScheduleCaptureRef.current;
+    if (!el) return;
+    setSavingScheduleImage(true);
+    try {
+      // Lazy-loaded — this library is only needed for the rare "save as
+      // image" click, no reason to bloat the main bundle everyone downloads.
+      const html2canvas = (await import('html2canvas')).default;
+      // html2canvas's own coordinate math doesn't account for how far the
+      // page is currently scrolled, so whenever this element isn't at the
+      // very top of the page the capture ends up offset — the real content
+      // shifts down inside the canvas, leaving blank space above it and
+      // pushing everything toward the bottom edge of the saved image.
+      // Passing negative scrollX/scrollY corrects for that (the standard
+      // fix for this well-known html2canvas issue).
+      const canvas = await html2canvas(el, {
+        backgroundColor: '#ffffff', scale: 2,
+        scrollX: -window.scrollX, scrollY: -window.scrollY,
+        windowWidth: document.documentElement.scrollWidth,
+        windowHeight: document.documentElement.scrollHeight,
+      });
+      const link = document.createElement('a');
+      link.href = canvas.toDataURL('image/jpeg', 0.92);
+      link.download = `ตารางเวรปัจจุบัน_${THAI_MONTHS[month]}_${year + 543}.jpg`;
+      link.click();
+      showToast('บันทึกรูปภาพเรียบร้อย');
+    } catch {
+      showToast('บันทึกรูปภาพไม่สำเร็จ ลองอีกครั้ง');
+    } finally {
+      setSavingScheduleImage(false);
+    }
+  };
 
   const holidaySet = new Set(holidays);
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2500); };
@@ -1829,6 +1884,15 @@ export default function App() {
                   )}
                 </div>
               )}
+              {currentScheduleGenerated && (
+                <button
+                  onClick={saveCurrentScheduleImage}
+                  disabled={savingScheduleImage}
+                  className="flex items-center gap-1.5 text-sm font-medium text-teal-700 hover:bg-teal-50 disabled:opacity-50 disabled:cursor-wait px-3 py-2 rounded-lg transition-colors border border-teal-200"
+                >
+                  <Download size={14} /> {savingScheduleImage ? 'กำลังบันทึก...' : 'บันทึกตารางเวรปัจจุบัน'}
+                </button>
+              )}
             </div>
             <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> ตารางนี้จะจัดก็ต่อเมื่อแอดมินกด "จัดเวร" เท่านั้น (ไม่จัดอัตโนมัติ) เพื่อให้รอโควตาต้นแบบและการแจ้งไม่สะดวกนิ่งก่อน — จำนวนเวรวันธรรมดา/วันหยุดของแต่ละคนจะเท่ากับตารางต้นแบบ และไม่มีใครอยู่เวรติดกัน{role === 'admin' ? ' คลิกวันที่เพื่อแก้ไขเฉพาะจุดเองได้หลังจัดแล้ว' : ''}</p>
 
@@ -1872,14 +1936,17 @@ export default function App() {
                 {role === 'admin' && (
                   <DoctorHighlightPicker doctors={activeDoctors} allDoctors={doctors} selectedId={recheckDoctorId} onSelect={setRecheckDoctorId} />
                 )}
-                <CalendarGrid
-                  year={year} month={month} scheduleData={effectiveSchedule}
-                  editable={role === 'admin'} onAssign={manualAssignCurrent}
-                  allDoctors={doctors} selectableDoctors={activeDoctors}
-                  holidaySet={holidaySet} unavailability={unavailability} marketplace={marketplace}
-                  compareTo={currentSchedule} highlightDoctorId={highlightDoctorId}
-                  violationDates={scheduleViolations}
-                />
+                <div ref={currentScheduleCaptureRef} className="bg-white p-3 rounded-xl">
+                  <p className="font-display font-semibold text-slate-800 text-base mb-2 text-center">ตารางเวรปัจจุบัน — {THAI_MONTHS[month]} {year + 543}</p>
+                  <CalendarGrid
+                    year={year} month={month} scheduleData={effectiveSchedule}
+                    editable={role === 'admin'} onAssign={manualAssignCurrent}
+                    allDoctors={doctors} selectableDoctors={activeDoctors}
+                    holidaySet={holidaySet} unavailability={unavailability} marketplace={marketplace}
+                    compareTo={currentSchedule} highlightDoctorId={highlightDoctorId}
+                    violationDates={scheduleViolations}
+                  />
+                </div>
                 {role === 'admin' && <p className="text-xs text-slate-400 mt-2 flex items-center gap-1"><Info size={12} /> แถบสีฟ้าด้านซ้ายของช่อง = วันนี้ถูกแก้ไขเฉพาะจุดด้วยมือ · ⚠️ = จัดให้ตรงเงื่อนไขไม่ได้แม้ลองสลับเวรหลายคู่แล้ว เจ้าของเวรเดิมจึงอยู่แทน</p>}
 
                 {scheduleViolations.length > 0 && (
