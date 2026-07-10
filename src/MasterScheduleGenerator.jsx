@@ -37,19 +37,43 @@ const LOOP_META = {
 
 export function ltFor(n) { return n <= 2 ? 'h12' : n === 3 ? 'h3' : n === 4 ? 'h4' : 'h5'; }
 
-export function detectGroups(year, month, holidayDates) {
+// Native Date rolls day-of-month over/under into adjacent months correctly
+// (e.g. new Date(2026, 11, 32) → 1 Jan 2027), so this works for any offset.
+function offsetDate(year, month, dayOffset) {
+  const d = new Date(year, month, dayOffset);
+  return isoDate(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+// Scans a window padded well before day 1 and after the last day (not just
+// [1, n]) so a holiday streak that crosses a month boundary — e.g. 31 Dec –
+// 3 Jan — is recognized as ONE continuous group instead of being split into
+// a 1-day group in December and a separate 3-day group in January. Only the
+// dates that actually fall in [year, month] are returned per group (that's
+// all this generation run assigns), but `trueLength` carries the FULL
+// cross-boundary streak length so ltFor() classifies it correctly (as a
+// 4-day group here, not 1+3).
+//
+// `isHoliday(date)` must be able to answer for ANY date, not just this
+// month's — callers build it from a combination of live-edited state (for
+// the month actually being configured) and saved config (for neighboring
+// months).
+export function detectGroups(year, month, isHoliday) {
   const n = daysInMonth(year, month);
-  const holSet = new Set(holidayDates);
-  const groups = [];
+  const PAD = 6; // comfortably longer than any realistic holiday streak
+  const rawGroups = [];
   let cur = [];
-  for (let d = 1; d <= n; d++) {
-    const date = isoDate(year, month, d);
-    const dow = new Date(year, month, d).getDay();
-    if (dow === 0 || dow === 6 || holSet.has(date)) cur.push(date);
-    else if (cur.length) { groups.push(cur); cur = []; }
+  for (let d = 1 - PAD; d <= n + PAD; d++) {
+    const date = offsetDate(year, month, d);
+    if (isHoliday(date)) cur.push(date);
+    else if (cur.length) { rawGroups.push(cur); cur = []; }
   }
-  if (cur.length) groups.push(cur);
-  return groups;
+  if (cur.length) rawGroups.push(cur);
+
+  const monthStart = isoDate(year, month, 1);
+  const monthEnd = isoDate(year, month, n);
+  return rawGroups
+    .map(g => ({ dates: g.filter(d => d >= monthStart && d <= monthEnd), trueLength: g.length }))
+    .filter(g => g.dates.length > 0);
 }
 
 // Build id arrays from name arrays (duplicate names produce duplicate ids — correct for H12Q)
@@ -117,10 +141,10 @@ function drainPriorityQueue(queue, lt, date, avail, debt) {
   return null;
 }
 
-function generateSchedule({ year, month, holidayDates, avail, WDQ, H12Q, H3Q, qp, debt }) {
+function generateSchedule({ year, month, isHoliday, avail, WDQ, H12Q, H3Q, qp, debt }) {
   const n = daysInMonth(year, month);
-  const groups = detectGroups(year, month, holidayDates);
-  const holSet = new Set(groups.flat());
+  const groups = detectGroups(year, month, isHoliday);
+  const holSet = new Set(groups.flatMap(g => g.dates));
   const debtCopy = JSON.parse(JSON.stringify(debt));
   let { weekday: w, h12, h3, h4, h5 } = { ...qp };
   const schedule = {};
@@ -130,11 +154,14 @@ function generateSchedule({ year, month, holidayDates, avail, WDQ, H12Q, H3Q, qp
   const newLastDate = {};
 
   groups.forEach(g => {
-    const lt = ltFor(g.length);
+    // Classify by the TRUE cross-month streak length, not just how many of
+    // its dates happen to fall in this month — a 31 Dec–3 Jan streak is one
+    // 4-day (h4) group even though only 1 date of it is assigned here.
+    const lt = ltFor(g.trueLength);
     const q = lt === 'h12' ? H12Q : H3Q;
     let ptr = lt === 'h12' ? h12 : lt === 'h3' ? h3 : lt === 'h4' ? h4 : h5;
     const assigns = [];
-    g.forEach(date => {
+    g.dates.forEach(date => {
       // debt+ doctors go first (priority), in loop order
       const priorityId = drainPriorityQueue(q, lt, date, avail, debtCopy);
       if (priorityId) {
@@ -152,7 +179,7 @@ function generateSchedule({ year, month, holidayDates, avail, WDQ, H12Q, H3Q, qp
     else if (lt === 'h3') h3 = ptr;
     else if (lt === 'h4') h4 = ptr;
     else h5 = ptr;
-    groupInfos.push({ dates: g, lt, assigns });
+    groupInfos.push({ dates: g.dates, lt, assigns, trueLength: g.trueLength });
   });
 
   const wdAssigns = [];
@@ -275,7 +302,21 @@ export default function MasterScheduleGenerator({ year, month, doctors, activeDo
     return hols;
   }, [year, month, natHolidays]);
 
-  const groups = useMemo(() => detectGroups(year, month, allHolidays), [year, month, allHolidays]);
+  const globalHolidaySet = useMemo(() => new Set(holidays), [holidays]);
+  const monthPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
+  // Answers for ANY date, not just this month's — needed so a holiday
+  // streak crossing into the neighboring month (e.g. 31 Dec – 3 Jan) is
+  // recognized as one continuous group instead of getting split at the
+  // boundary. Uses the live-edited natHolidays for the month actually being
+  // configured here; falls back to the saved config for any other month,
+  // which isn't being edited in this session.
+  const isHolidayDate = useCallback((date) => {
+    const dow = new Date(date + 'T00:00:00').getDay();
+    if (dow === 0 || dow === 6) return true;
+    return date.startsWith(monthPrefix) ? natHolidays.has(date) : globalHolidaySet.has(date);
+  }, [monthPrefix, natHolidays, globalHolidaySet]);
+
+  const groups = useMemo(() => detectGroups(year, month, isHolidayDate), [year, month, isHolidayDate]);
 
   const groupMap = useMemo(() => {
     const m = {};
@@ -307,7 +348,7 @@ export default function MasterScheduleGenerator({ year, month, doctors, activeDo
   const handleGenerate = () => {
     const res = generateSchedule({
       year, month,
-      holidayDates: allHolidays,
+      isHoliday: isHolidayDate,
       avail,
       WDQ, H12Q, H3Q,
       qp,
@@ -408,13 +449,15 @@ export default function MasterScheduleGenerator({ year, month, doctors, activeDo
                   {groups.length === 0
                     ? <p className="text-xs text-slate-400">ยังไม่มีวันหยุดนักขัตฤกษ์ — เสาร์-อาทิตย์จะตรวจพบอัตโนมัติ</p>
                     : groups.map((g, i) => {
-                      const lt = ltFor(g.length);
+                      const lt = ltFor(g.trueLength);
                       const meta = LOOP_META[lt];
-                      const lbl = g.length === 1 ? `วันที่ ${parseInt(g[0].slice(-2))}` : `วันที่ ${parseInt(g[0].slice(-2))}–${parseInt(g[g.length-1].slice(-2))}`;
+                      const { dates } = g;
+                      const lbl = dates.length === 1 ? `วันที่ ${parseInt(dates[0].slice(-2))}` : `วันที่ ${parseInt(dates[0].slice(-2))}–${parseInt(dates[dates.length-1].slice(-2))}`;
+                      const crossesBoundary = g.trueLength !== dates.length;
                       return (
                         <span key={i} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border"
                           style={{ background: meta.bg, color: meta.tx, borderColor: `${meta.tx}40` }}>
-                          {lbl} · {meta.label}
+                          {lbl} · {meta.label}{crossesBoundary ? ' (ต่อเนื่องข้ามเดือน)' : ''}
                         </span>
                       );
                     })
@@ -576,9 +619,10 @@ export default function MasterScheduleGenerator({ year, month, doctors, activeDo
                   const d0 = parseInt(gi.dates[0].slice(-2));
                   const dN = parseInt(gi.dates[gi.dates.length - 1].slice(-2));
                   const lbl = gi.dates.length === 1 ? `วันที่ ${d0}` : `วันที่ ${d0}–${dN}`;
+                  const crossesBoundary = gi.trueLength !== gi.dates.length;
                   return (
                     <div key={i} className="px-3 py-2 rounded-lg" style={{ background: meta.bg }}>
-                      <p className="text-[11px] font-medium mb-1" style={{ color: meta.tx }}>{lbl} — {meta.label}</p>
+                      <p className="text-[11px] font-medium mb-1" style={{ color: meta.tx }}>{lbl} — {meta.label}{crossesBoundary ? ' (ต่อเนื่องข้ามเดือน)' : ''}</p>
                       <div className="flex flex-wrap gap-3">
                         {gi.assigns.map(a => (
                           <span key={a.date} className="text-[10px]" style={{ color: meta.tx }}>

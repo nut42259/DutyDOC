@@ -485,15 +485,24 @@ function MasterMonthSummary({ year, month, doctors, masterSchedule, holidays, qu
   const H3Q = resolveQueue(queueState.H3Q ?? DEFAULT_H3Q_NAMES, doctors);
   const qMap = { weekday: WDQ, h12: H12Q, h3: H3Q, h4: H3Q, h5: H3Q };
 
-  const groups = detectGroups(year, month, holidays);
-  const groupDateSet = new Set(groups.flat());
+  const holidaySetAll = new Set(holidays);
+  // Answers for ANY date, not just this month's — needed so a holiday
+  // streak crossing a month boundary (e.g. 31 Dec – 3 Jan) is classified as
+  // one continuous group using its true length, matching how it was
+  // actually generated (see MasterScheduleGenerator's detectGroups).
+  const isHolidayDate = (date) => {
+    const dow = new Date(date + 'T00:00:00').getDay();
+    return dow === 0 || dow === 6 || holidaySetAll.has(date);
+  };
+  const groups = detectGroups(year, month, isHolidayDate);
+  const groupDateSet = new Set(groups.flatMap(g => g.dates));
   const datesByType = { weekday: [], h12: [], h3: [], h4: [], h5: [] };
   const total = daysInMonth(year, month);
   for (let d = 1; d <= total; d++) {
     const date = isoDate(year, month, d);
     if (!groupDateSet.has(date)) datesByType.weekday.push(date);
   }
-  groups.forEach(g => { datesByType[ltFor(g.length)].push(...g); });
+  groups.forEach(g => { datesByType[ltFor(g.trueLength)].push(...g.dates); });
 
   const rows = ['weekday', 'h12', 'h3', 'h4', 'h5'].map(key => {
     const queue = qMap[key];
