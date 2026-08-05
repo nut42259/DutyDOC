@@ -569,7 +569,7 @@ const QUEUE_RUN_ORDER_TEXT = {
 // Merges the static rotation reference (for recheck) with this month's
 // actual start/end doctor per loop (previously a separate admin-only
 // "สรุปคิวเดือนนี้" block) into one panel, visible to admin and doctors alike.
-function QueueRunOrderSummary({ year, month, doctors, masterSchedule, holidays, queueState }) {
+function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays, queueState }) {
   const WDQ = resolveQueue(queueState.WDQ ?? DEFAULT_WDQ_NAMES, doctors);
   const H12Q = resolveQueue(queueState.H12Q ?? DEFAULT_H12Q_NAMES, doctors);
   const H3Q = resolveQueue(queueState.H3Q ?? DEFAULT_H3Q_NAMES, doctors);
@@ -599,12 +599,16 @@ function QueueRunOrderSummary({ year, month, doctors, masterSchedule, holidays, 
     const info = lastNextInLoop(queue, queueState[key] ?? 0);
     const nextName = info ? (doctors.find(d => d.id === info.nextId)?.name ?? '?') : '?';
     const nextLabel = info?.nextHasDup ? `${nextName}${info.nextOcc}` : nextName;
-    const datesThisMonth = datesByType[key].filter(d => masterSchedule[d]).sort();
+    // Use masterOriginal (the pre-trade baseline), not masterSchedule (live
+    // ownership) — a sold/traded shift changes who currently owns a date but
+    // not who the queue rotation actually put there, and this panel exists
+    // specifically to let admin/doctors recheck the rotation itself.
+    const datesThisMonth = datesByType[key].filter(d => masterOriginal[d]).sort();
     const storedLastDate = queueState.lastDate?.[key];
 
     if (datesThisMonth.length > 0) {
-      const firstDoc = doctors.find(d => d.id === masterSchedule[datesThisMonth[0]])?.name ?? '?';
-      const lastDoc = doctors.find(d => d.id === masterSchedule[datesThisMonth[datesThisMonth.length - 1]])?.name ?? '?';
+      const firstDoc = doctors.find(d => d.id === masterOriginal[datesThisMonth[0]])?.name ?? '?';
+      const lastDoc = doctors.find(d => d.id === masterOriginal[datesThisMonth[datesThisMonth.length - 1]])?.name ?? '?';
       // Only trust the "next" prediction if the queue hasn't already moved
       // past this month for this loop (i.e. this month IS the most recent
       // one generated for it) — otherwise a later month already consumed it.
@@ -2049,7 +2053,7 @@ export default function App() {
                 <p className="text-xs text-slate-400 mt-3 flex items-center gap-1"><Info size={12} /> ชื่อสีเทาขีดฆ่า = เจ้าของเวรเดิมก่อนขายเวร (ไม่ปรากฏสำหรับการแลกเวร) · ชื่อด้านบน = เจ้าของเวรปัจจุบัน</p>
                 <UsageTable title="จำนวนเวรที่จัดแล้วเดือนนี้ (ปัจจุบัน(เดิมก่อนขายเวร))" doctors={activeDoctors} usage={masterUsage} original={masterOriginalUsage} />
                 {hasMasterData && queueState && (
-                  <QueueRunOrderSummary year={year} month={month} doctors={doctors} masterSchedule={masterSchedule} holidays={holidays} queueState={queueState} />
+                  <QueueRunOrderSummary year={year} month={month} doctors={doctors} masterOriginal={masterOriginal} holidays={holidays} queueState={queueState} />
                 )}
               </>
             )}
