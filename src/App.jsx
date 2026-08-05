@@ -628,7 +628,12 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
     (async () => {
       const found = {};
       const remaining = new Set(['weekday', 'h12', 'h3', 'h4', 'h5']);
-      let y = year, m = month;
+      // Start from the month BEFORE the one being viewed, not the viewed
+      // month itself — "ล่าสุดจบที่" means "where the queue stood coming
+      // into this month," which should stay distinct from "เดือนนี้จบที่"
+      // even when this month has its own data.
+      let y = year, m = month - 1;
+      if (m < 0) { m = 11; y -= 1; }
       const BATCH = 12, MAX_BATCHES = 3; // up to 36 months back
       for (let batch = 0; batch < MAX_BATCHES && remaining.size > 0 && !cancelled; batch++) {
         const keys = [], yms = [];
