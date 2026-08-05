@@ -553,7 +553,23 @@ function UsageTable({ title, doctors, usage, original }) {
 
 const QUEUE_LOOP_LABELS = { weekday: 'วันธรรมดา', h12: 'วันหยุด 1-2 วัน', h3: 'วันหยุด 3 วัน', h4: 'วันหยุด 4 วัน', h5: 'วันหยุด 5 วัน' };
 
-function MasterMonthSummary({ year, month, doctors, masterSchedule, holidays, queueState }) {
+// Static reference sequence per loop (not derived from live queue state) —
+// the fixed rotation order the program is supposed to follow, independent
+// of wherever the pointer currently sits. h3/h4/h5 all draw from the same
+// underlying array (H3Q) so they share identical text here, but each still
+// gets its own "เริ่มที่/จบที่" below since each has its own pointer.
+const QUEUE_RUN_ORDER_TEXT = {
+  weekday: 'อารีรัตน์ → ชุติมา → กนกอร → ธัญลักษณ์ → วัทนี → ธนวรรณ → ณัชพล → สมิตา → พสิษฐา → ณัฐธิดา → ขนิษฐา → ณัฐพล',
+  h12: 'ชุติมา → ณัชพล → ณัฐพล → กนกอร → ธัญลักษณ์ → ณัฐธิดา → ขนิษฐา → ธนวรรณ → ณัชพล → ณัฐพล → วัทนี → สมิตา → ณัฐธิดา → ขนิษฐา → พสิษฐา',
+  h3: 'ชุติมา → กนกอร → ธัญลักษณ์ → วัทนี → ธนวรรณ → ณัชพล → สมิตา → พสิษฐา → ณัฐธิดา → ขนิษฐา → ณัฐพล',
+  h4: 'ชุติมา → กนกอร → ธัญลักษณ์ → วัทนี → ธนวรรณ → ณัชพล → สมิตา → พสิษฐา → ณัฐธิดา → ขนิษฐา → ณัฐพล',
+  h5: 'ชุติมา → กนกอร → ธัญลักษณ์ → วัทนี → ธนวรรณ → ณัชพล → สมิตา → พสิษฐา → ณัฐธิดา → ขนิษฐา → ณัฐพล',
+};
+
+// Merges the static rotation reference (for recheck) with this month's
+// actual start/end doctor per loop (previously a separate admin-only
+// "สรุปคิวเดือนนี้" block) into one panel, visible to admin and doctors alike.
+function QueueRunOrderSummary({ year, month, doctors, masterSchedule, holidays, queueState }) {
   const WDQ = resolveQueue(queueState.WDQ ?? DEFAULT_WDQ_NAMES, doctors);
   const H12Q = resolveQueue(queueState.H12Q ?? DEFAULT_H12Q_NAMES, doctors);
   const H3Q = resolveQueue(queueState.H3Q ?? DEFAULT_H3Q_NAMES, doctors);
@@ -578,7 +594,7 @@ function MasterMonthSummary({ year, month, doctors, masterSchedule, holidays, qu
   }
   groups.forEach(g => { datesByType[ltFor(g.trueLength)].push(...g.dates); });
 
-  const rows = ['weekday', 'h12', 'h3', 'h4', 'h5'].map(key => {
+  const rows = ['weekday', 'h12', 'h3', 'h4', 'h5'].map((key, idx) => {
     const queue = qMap[key];
     const info = lastNextInLoop(queue, queueState[key] ?? 0);
     const nextName = info ? (doctors.find(d => d.id === info.nextId)?.name ?? '?') : '?';
@@ -593,30 +609,40 @@ function MasterMonthSummary({ year, month, doctors, masterSchedule, holidays, qu
       // past this month for this loop (i.e. this month IS the most recent
       // one generated for it) — otherwise a later month already consumed it.
       const isCurrent = storedLastDate === datesThisMonth[datesThisMonth.length - 1];
-      return { key, hasData: true, firstDoc, lastDoc, nextLabel, isCurrent };
+      return { key, idx, hasData: true, firstDoc, lastDoc, nextLabel, isCurrent };
     }
     const lastName = info ? (doctors.find(d => d.id === info.lastId)?.name ?? '?') : '?';
     const lastLabel = info?.lastHasDup ? `${lastName}${info.lastOcc}` : lastName;
-    return { key, hasData: false, lastDateStr: storedLastDate, lastLabel, nextLabel };
+    return { key, idx, hasData: false, lastDateStr: storedLastDate, lastLabel, nextLabel };
   });
 
   return (
-    <div className="mt-4 border border-slate-200 rounded-xl px-3 py-2.5">
-      <p className="text-xs font-medium text-slate-700 mb-2">สรุปคิวเดือนนี้</p>
-      <div className="space-y-1.5">
+    <div className="mt-4 border border-slate-200 rounded-xl px-3 py-3">
+      <p className="text-xs font-medium text-slate-700 mb-3">วิธีการรันคิวเวร</p>
+      <div>
         {rows.map(r => (
-          <p key={r.key} className="text-[11px] text-slate-600">
-            <span className="font-medium text-slate-700">{QUEUE_LOOP_LABELS[r.key]}</span>{' '}
+          <div key={r.key} className={r.idx > 0 ? 'pt-3 mt-3 border-t border-slate-100' : ''}>
+            <p className="text-[11px] font-medium text-slate-700 mb-1.5">{r.idx + 1}. เวร{QUEUE_LOOP_LABELS[r.key]}</p>
+            <p className="text-[10.5px] text-slate-500 leading-relaxed mb-2">{QUEUE_RUN_ORDER_TEXT[r.key]}</p>
             {r.hasData ? (
-              <>เริ่มที่ <b>{r.firstDoc}</b> จบที่ <b>{r.lastDoc}</b>{' '}
-                {r.isCurrent ? <>เดือนต่อไปเริ่มที่ <b>{r.nextLabel}</b></> : <span className="text-slate-400">(คิวเดินต่อไปหลังจากเดือนนี้แล้ว)</span>}
-              </>
+              <div className="flex items-center flex-wrap gap-x-2.5 gap-y-1">
+                <div className="flex flex-col items-start gap-0.5">
+                  <span className="text-[9px] font-semibold tracking-wide text-slate-400 uppercase">เริ่มที่</span>
+                  <span className="border border-slate-700 rounded-md px-2.5 py-1 text-xs font-semibold text-slate-800">{r.firstDoc}</span>
+                </div>
+                <span className="text-slate-300 text-sm mt-3">→</span>
+                <div className="flex flex-col items-start gap-0.5">
+                  <span className="text-[9px] font-semibold tracking-wide text-slate-400 uppercase">จบที่</span>
+                  <span className="border border-slate-700 rounded-md px-2.5 py-1 text-xs font-semibold text-slate-800">{r.lastDoc}</span>
+                </div>
+                {!r.isCurrent && <span className="text-[10px] text-slate-400 self-end mb-1">(คิวเดินต่อไปหลังจากเดือนนี้แล้ว)</span>}
+              </div>
             ) : (
-              <>ล่าสุด{r.lastDateStr ? ` ${formatDisplayDate(r.lastDateStr)}` : ''} จบที่ <b>{r.lastLabel}</b> ดังนั้นเวรต่อไปเริ่มที่ <b>{r.nextLabel}</b>{' '}
-                <span className="text-slate-400">(ไม่มีวันประเภทนี้ในเดือนนี้ จึงเป็นข้อมูลเก่า)</span>
-              </>
+              <p className="text-[11px] text-slate-400 italic">
+                ไม่มีวันประเภทนี้ในเดือนนี้ — ล่าสุด{r.lastDateStr ? ` ${formatDisplayDate(r.lastDateStr)}` : ''} จบที่ <span className="text-slate-500 not-italic font-medium">{r.lastLabel}</span> ดังนั้นเวรต่อไปเริ่มที่ <span className="text-slate-500 not-italic font-medium">{r.nextLabel}</span>
+              </p>
             )}
-          </p>
+          </div>
         ))}
       </div>
     </div>
@@ -2022,8 +2048,8 @@ export default function App() {
                 />
                 <p className="text-xs text-slate-400 mt-3 flex items-center gap-1"><Info size={12} /> ชื่อสีเทาขีดฆ่า = เจ้าของเวรเดิมก่อนขายเวร (ไม่ปรากฏสำหรับการแลกเวร) · ชื่อด้านบน = เจ้าของเวรปัจจุบัน</p>
                 <UsageTable title="จำนวนเวรที่จัดแล้วเดือนนี้ (ปัจจุบัน(เดิมก่อนขายเวร))" doctors={activeDoctors} usage={masterUsage} original={masterOriginalUsage} />
-                {role === 'admin' && hasMasterData && queueState && (
-                  <MasterMonthSummary year={year} month={month} doctors={doctors} masterSchedule={masterSchedule} holidays={holidays} queueState={queueState} />
+                {hasMasterData && queueState && (
+                  <QueueRunOrderSummary year={year} month={month} doctors={doctors} masterSchedule={masterSchedule} holidays={holidays} queueState={queueState} />
                 )}
               </>
             )}
