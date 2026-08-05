@@ -13,10 +13,7 @@ import {
   getQueueState, setQueueState,
 } from './storage';
 import LoginScreen from './LoginScreen';
-import MasterScheduleGenerator, {
-  DEFAULT_WDQ_NAMES, DEFAULT_H12Q_NAMES, DEFAULT_H3Q_NAMES,
-  resolveQueue, detectGroups, ltFor, lastNextInLoop,
-} from './MasterScheduleGenerator';
+import MasterScheduleGenerator, { detectGroups, ltFor } from './MasterScheduleGenerator';
 
 /* ---------------------------------- constants ---------------------------------- */
 
@@ -569,12 +566,22 @@ const QUEUE_RUN_ORDER_TEXT = {
 // Merges the static rotation reference (for recheck) with this month's
 // actual start/end doctor per loop (previously a separate admin-only
 // "สรุปคิวเดือนนี้" block) into one panel, visible to admin and doctors alike.
-function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays, queueState }) {
-  const WDQ = resolveQueue(queueState.WDQ ?? DEFAULT_WDQ_NAMES, doctors);
-  const H12Q = resolveQueue(queueState.H12Q ?? DEFAULT_H12Q_NAMES, doctors);
-  const H3Q = resolveQueue(queueState.H3Q ?? DEFAULT_H3Q_NAMES, doctors);
-  const qMap = { weekday: WDQ, h12: H12Q, h3: H3Q, h4: H3Q, h5: H3Q };
+// Classifies every date in (y, m) into weekday/h12/h3/h4/h5, same logic used
+// both for "this month" and for each historical month scanned below.
+function classifyMonthDates(y, m, isHolidayDate) {
+  const groups = detectGroups(y, m, isHolidayDate);
+  const groupDateSet = new Set(groups.flatMap(g => g.dates));
+  const datesByType = { weekday: [], h12: [], h3: [], h4: [], h5: [] };
+  const total = daysInMonth(y, m);
+  for (let d = 1; d <= total; d++) {
+    const date = isoDate(y, m, d);
+    if (!groupDateSet.has(date)) datesByType.weekday.push(date);
+  }
+  groups.forEach(g => { datesByType[ltFor(g.trueLength)].push(...g.dates); });
+  return datesByType;
+}
 
+function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }) {
   const holidaySetAll = new Set(holidays);
   // Answers for ANY date, not just this month's — needed so a holiday
   // streak crossing a month boundary (e.g. 31 Dec – 3 Jan) is classified as
@@ -584,70 +591,114 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays, 
     const dow = new Date(date + 'T00:00:00').getDay();
     return dow === 0 || dow === 6 || holidaySetAll.has(date);
   };
-  const groups = detectGroups(year, month, isHolidayDate);
-  const groupDateSet = new Set(groups.flatMap(g => g.dates));
-  const datesByType = { weekday: [], h12: [], h3: [], h4: [], h5: [] };
-  const total = daysInMonth(year, month);
-  for (let d = 1; d <= total; d++) {
-    const date = isoDate(year, month, d);
-    if (!groupDateSet.has(date)) datesByType.weekday.push(date);
-  }
-  groups.forEach(g => { datesByType[ltFor(g.trueLength)].push(...g.dates); });
 
-  const rows = ['weekday', 'h12', 'h3', 'h4', 'h5'].map((key, idx) => {
-    const queue = qMap[key];
-    const info = lastNextInLoop(queue, queueState[key] ?? 0);
-    const nextName = info ? (doctors.find(d => d.id === info.nextId)?.name ?? '?') : '?';
-    const nextLabel = info?.nextHasDup ? `${nextName}${info.nextOcc}` : nextName;
-    // Use masterOriginal (the pre-trade baseline), not masterSchedule (live
-    // ownership) — a sold/traded shift changes who currently owns a date but
-    // not who the queue rotation actually put there, and this panel exists
-    // specifically to let admin/doctors recheck the rotation itself.
+  const datesByType = classifyMonthDates(year, month, isHolidayDate);
+  const thisMonth = {};
+  ['weekday', 'h12', 'h3', 'h4', 'h5'].forEach(key => {
     const datesThisMonth = datesByType[key].filter(d => masterOriginal[d]).sort();
-    const storedLastDate = queueState.lastDate?.[key];
-
     if (datesThisMonth.length > 0) {
-      const firstDoc = doctors.find(d => d.id === masterOriginal[datesThisMonth[0]])?.name ?? '?';
-      const lastDoc = doctors.find(d => d.id === masterOriginal[datesThisMonth[datesThisMonth.length - 1]])?.name ?? '?';
-      // Only trust the "next" prediction if the queue hasn't already moved
-      // past this month for this loop (i.e. this month IS the most recent
-      // one generated for it) — otherwise a later month already consumed it.
-      const isCurrent = storedLastDate === datesThisMonth[datesThisMonth.length - 1];
-      return { key, idx, hasData: true, firstDoc, lastDoc, nextLabel, isCurrent };
+      thisMonth[key] = {
+        firstDate: datesThisMonth[0],
+        firstDoc: doctors.find(d => d.id === masterOriginal[datesThisMonth[0]])?.name ?? '?',
+        lastDate: datesThisMonth[datesThisMonth.length - 1],
+        lastDoc: doctors.find(d => d.id === masterOriginal[datesThisMonth[datesThisMonth.length - 1]])?.name ?? '?',
+      };
     }
-    const lastName = info ? (doctors.find(d => d.id === info.lastId)?.name ?? '?') : '?';
-    const lastLabel = info?.lastHasDup ? `${lastName}${info.lastOcc}` : lastName;
-    return { key, idx, hasData: false, lastDateStr: storedLastDate, lastLabel, nextLabel };
   });
+
+  // "ล่าสุดจบที่" — the real most-recent assignment per loop, found by
+  // actually reading past months' saved schedules (starting from the month
+  // being viewed and walking backward) rather than trusting queueState's
+  // stored lastDate, which has proven stale/wrong (e.g. showing a LATER
+  // month than the one actually being viewed). Fetched in batches so a loop
+  // type with no recent history doesn't require dozens of sequential
+  // round-trips.
+  const [lastReal, setLastReal] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    setLastReal(null);
+    // Local to the effect (not the outer isHolidayDate closure) so the only
+    // real dependency is `holidays` itself, not a function reference that's
+    // new every render.
+    const holidaySet = new Set(holidays);
+    const isHoliday = (date) => {
+      const dow = new Date(date + 'T00:00:00').getDay();
+      return dow === 0 || dow === 6 || holidaySet.has(date);
+    };
+    (async () => {
+      const found = {};
+      const remaining = new Set(['weekday', 'h12', 'h3', 'h4', 'h5']);
+      let y = year, m = month;
+      const BATCH = 12, MAX_BATCHES = 3; // up to 36 months back
+      for (let batch = 0; batch < MAX_BATCHES && remaining.size > 0 && !cancelled; batch++) {
+        const keys = [], yms = [];
+        for (let i = 0; i < BATCH; i++) {
+          keys.push(monthKey(y, m));
+          yms.push([y, m]);
+          m -= 1; if (m < 0) { m = 11; y -= 1; }
+        }
+        const rows = await Promise.all(keys.map(k => getMonthData(k)));
+        for (let i = 0; i < rows.length && remaining.size > 0; i++) {
+          const data = rows[i];
+          if (!data) continue;
+          const [yy, mm] = yms[i];
+          const master = data.masterOriginal || data.masterSchedule || data.schedule || {};
+          const dbt = classifyMonthDates(yy, mm, isHoliday);
+          remaining.forEach(key => {
+            const datesOfType = dbt[key].filter(d => master[d]).sort();
+            if (datesOfType.length > 0) {
+              const lastDate = datesOfType[datesOfType.length - 1];
+              found[key] = { date: lastDate, name: doctors.find(d => d.id === master[lastDate])?.name ?? '?' };
+            }
+          });
+          [...remaining].forEach(key => { if (found[key]) remaining.delete(key); });
+        }
+      }
+      if (!cancelled) setLastReal(found);
+    })();
+    return () => { cancelled = true; };
+  }, [year, month, doctors, holidays]);
+
+  const Box = ({ label, name, date, muted }) => (
+    <div className="flex flex-col items-start gap-0.5">
+      <span className="text-[9px] font-semibold tracking-wide text-slate-400 uppercase">{label}</span>
+      <span className={`rounded-md px-2.5 py-1 text-xs font-semibold text-slate-800 ${muted ? 'border border-dashed border-slate-300' : 'border border-slate-700'}`}>{name}</span>
+      <span className="text-[9.5px] text-slate-400">{date ? formatDisplayDate(date) : ''}</span>
+    </div>
+  );
 
   return (
     <div className="mt-4 border border-slate-200 rounded-xl px-3 py-3">
       <p className="text-xs font-medium text-slate-700 mb-3">วิธีการรันคิวเวร</p>
       <div>
-        {rows.map(r => (
-          <div key={r.key} className={r.idx > 0 ? 'pt-3 mt-3 border-t border-slate-100' : ''}>
-            <p className="text-[11px] font-medium text-slate-700 mb-1.5">{r.idx + 1}. เวร{QUEUE_LOOP_LABELS[r.key]}</p>
-            <p className="text-[10.5px] text-slate-500 leading-relaxed mb-2">{QUEUE_RUN_ORDER_TEXT[r.key]}</p>
-            {r.hasData ? (
-              <div className="flex items-center flex-wrap gap-x-2.5 gap-y-1">
-                <div className="flex flex-col items-start gap-0.5">
-                  <span className="text-[9px] font-semibold tracking-wide text-slate-400 uppercase">เริ่มที่</span>
-                  <span className="border border-slate-700 rounded-md px-2.5 py-1 text-xs font-semibold text-slate-800">{r.firstDoc}</span>
-                </div>
-                <span className="text-slate-300 text-sm mt-3">→</span>
-                <div className="flex flex-col items-start gap-0.5">
-                  <span className="text-[9px] font-semibold tracking-wide text-slate-400 uppercase">จบที่</span>
-                  <span className="border border-slate-700 rounded-md px-2.5 py-1 text-xs font-semibold text-slate-800">{r.lastDoc}</span>
-                </div>
-                {!r.isCurrent && <span className="text-[10px] text-slate-400 self-end mb-1">(คิวเดินต่อไปหลังจากเดือนนี้แล้ว)</span>}
+        {['weekday', 'h12', 'h3', 'h4', 'h5'].map((key, idx) => {
+          const tm = thisMonth[key];
+          const lr = lastReal ? lastReal[key] : undefined; // undefined = still loading
+          return (
+            <div key={key} className={idx > 0 ? 'pt-3 mt-3 border-t border-slate-100' : ''}>
+              <p className="text-[11px] font-medium text-slate-700 mb-1.5">{idx + 1}. เวร{QUEUE_LOOP_LABELS[key]}</p>
+              <p className="text-[10.5px] text-slate-500 leading-relaxed mb-2">{QUEUE_RUN_ORDER_TEXT[key]}</p>
+              <div className="flex items-end flex-wrap gap-x-2.5 gap-y-2">
+                {lastReal === null ? (
+                  <span className="text-[11px] text-slate-400">กำลังโหลด...</span>
+                ) : lr ? (
+                  <Box label="ล่าสุดจบที่" name={lr.name} date={lr.date} muted />
+                ) : (
+                  <span className="text-[11px] text-slate-400 italic">ยังไม่มีประวัติ</span>
+                )}
+                {tm && (
+                  <>
+                    <span className="text-slate-300 text-sm mb-2">→</span>
+                    <Box label="เดือนนี้เริ่มที่" name={tm.firstDoc} date={tm.firstDate} />
+                    <span className="text-slate-300 text-sm mb-2">→</span>
+                    <Box label="เดือนนี้จบที่" name={tm.lastDoc} date={tm.lastDate} />
+                  </>
+                )}
               </div>
-            ) : (
-              <p className="text-[11px] text-slate-400 italic">
-                ไม่มีวันประเภทนี้ในเดือนนี้ — ล่าสุด{r.lastDateStr ? ` ${formatDisplayDate(r.lastDateStr)}` : ''} จบที่ <span className="text-slate-500 not-italic font-medium">{r.lastLabel}</span> ดังนั้นเวรต่อไปเริ่มที่ <span className="text-slate-500 not-italic font-medium">{r.nextLabel}</span>
-              </p>
-            )}
-          </div>
-        ))}
+              {!tm && <p className="text-[11px] text-slate-400 italic mt-1.5">ไม่มีวันประเภทนี้ในเดือนนี้</p>}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -2053,7 +2104,7 @@ export default function App() {
                 <p className="text-xs text-slate-400 mt-3 flex items-center gap-1"><Info size={12} /> ชื่อสีเทาขีดฆ่า = เจ้าของเวรเดิมก่อนขายเวร (ไม่ปรากฏสำหรับการแลกเวร) · ชื่อด้านบน = เจ้าของเวรปัจจุบัน</p>
                 <UsageTable title="จำนวนเวรที่จัดแล้วเดือนนี้ (ปัจจุบัน(เดิมก่อนขายเวร))" doctors={activeDoctors} usage={masterUsage} original={masterOriginalUsage} />
                 {hasMasterData && queueState && (
-                  <QueueRunOrderSummary year={year} month={month} doctors={doctors} masterOriginal={masterOriginal} holidays={holidays} queueState={queueState} />
+                  <QueueRunOrderSummary year={year} month={month} doctors={doctors} masterOriginal={masterOriginal} holidays={holidays} />
                 )}
               </>
             )}
