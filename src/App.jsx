@@ -244,18 +244,52 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
   }
 
   // Quota = master-schedule quota, adjusted by any carried-in debt from a
-  // prior month in the same batch. Clamped at 0 (can't target a negative
-  // shift count) — debtIn itself is already capped by the caller.
+  // prior month in the same batch. `target` is the *unclamped* debt-adjusted
+  // figure (can go negative if someone was heavily over-serviced and this
+  // month's own base quota isn't enough to absorb the correction); `quota` is
+  // what actually gets fed to the solvers, clamped at 0 since neither solver
+  // can be asked for a negative shift count. Keeping both matters: debtOut
+  // below is computed against `target`, not `quota`, so whatever the clamp
+  // trims off isn't silently lost — it just carries forward as debt again.
   const rawQuota = computeUsage(doctors, masterSchedule, holidaySet);
+  const target = {};
   const quota = {};
   doctors.forEach(d => {
     const base = rawQuota[d.id] || { weekday: 0, holiday: 0 };
     const debt = debtIn[d.id] || {};
-    quota[d.id] = {
-      weekday: Math.max(0, base.weekday + (debt.weekday || 0)),
-      holiday: Math.max(0, base.holiday + (debt.holiday || 0)),
+    target[d.id] = {
+      weekday: base.weekday + (debt.weekday || 0),
+      holiday: base.holiday + (debt.holiday || 0),
     };
+    quota[d.id] = { weekday: Math.max(0, target[d.id].weekday), holiday: Math.max(0, target[d.id].holiday) };
   });
+
+  // debtOut = target - actually assigned, per doctor/type, computed from the
+  // FINAL schedule regardless of which solver produced it. This is exact and
+  // unclamped on purpose: since every date always ends up assigned to
+  // exactly one doctor, sum(assigned) across doctors always equals the
+  // number of dates of that type, so sum(debtOut) across doctors always
+  // equals sum(target) - dates = sum(debtIn) exactly. In other words debt is
+  // perfectly conserved batch-wide no matter how lopsided a single month's
+  // solve is — nothing is ever gained or lost, only carried forward — which
+  // is what actually lets a multi-month batch converge to zero debt for
+  // every individual doctor rather than merely netting to zero on average.
+  const computeDebtOut = (finalAssign) => {
+    const assigned = {};
+    doctors.forEach(d => { assigned[d.id] = { weekday: 0, holiday: 0 }; });
+    dates.forEach(date => {
+      const id = finalAssign[date];
+      if (!id || !assigned[id]) return;
+      assigned[id][dayType(date, holidaySet)] += 1;
+    });
+    const debtOut = {};
+    doctors.forEach(d => {
+      const w = target[d.id].weekday - assigned[d.id].weekday;
+      const h = target[d.id].holiday - assigned[d.id].holiday;
+      if (w !== 0 || h !== 0) debtOut[d.id] = { weekday: w, holiday: h };
+    });
+    return debtOut;
+  };
 
   const unavailSet = {};
   doctors.forEach(d => { unavailSet[d.id] = new Set(unavailability[d.id] || []); });
@@ -264,9 +298,7 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
   // this is guaranteed to find it — no heuristic can promise that.
   const exhaustive = exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSchedule, holidaySet, budget: 300000, boundaryBlocked });
   if (exhaustive.solved) {
-    // A perfect solve hits the (debt-adjusted) quota exactly for everyone —
-    // nothing left to carry forward.
-    return { schedule: exhaustive.assign, violations: [], debtOut: {} };
+    return { schedule: exhaustive.assign, violations: [], debtOut: computeDebtOut(exhaustive.assign) };
   }
 
   // No perfect assignment found within budget (or proven impossible) — fall
@@ -415,23 +447,7 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
     }
   });
 
-  // `remaining[docId][type]` already tracks quota-minus-assigned at this
-  // point (every place()/fallback decrement mutated it directly) — exactly
-  // the leftover debt to carry into the next month of the batch. Positive =
-  // still owed extra (fell short); negative = got more than the adjusted
-  // target (the fallback path can over-assign the nominal owner without
-  // checking remaining capacity, which is fine — it self-corrects here
-  // instead of silently vanishing). Clamped to ±2 per type, matching the
-  // master-queue debt convention, so one bad month can't demand an
-  // impossible correction three months later.
-  const debtOut = {};
-  doctors.forEach(d => {
-    const w = Math.max(-2, Math.min(2, remaining[d.id]?.weekday || 0));
-    const h = Math.max(-2, Math.min(2, remaining[d.id]?.holiday || 0));
-    if (w !== 0 || h !== 0) debtOut[d.id] = { weekday: w, holiday: h };
-  });
-
-  return { schedule: assign, violations: [...violations].sort(), debtOut };
+  return { schedule: assign, violations: [...violations].sort(), debtOut: computeDebtOut(assign) };
 }
 
 
