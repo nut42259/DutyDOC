@@ -512,9 +512,29 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
       // couldn't be made to satisfy every rule (recorded above so the admin
       // can see exactly which dates need manual attention).
       const nominal = masterSchedule[date];
-      const fallback = nominal && remaining[nominal] && !boundaryBlocked(date, nominal)
-        ? nominal
-        : (doctors.find(d => !neighborsOf(date).some(n => assign[n] === d.id) && !boundaryBlocked(date, d.id))?.id ?? doctors[0]?.id ?? null);
+      let fallback;
+      if (nominal && remaining[nominal] && !boundaryBlocked(date, nominal)) {
+        fallback = nominal;
+      } else {
+        // The nominal owner isn't usable at all this month (inactive, or a
+        // boundary conflict) — both borrow tiers above already failed too,
+        // so this is a genuine "someone must be here" situation. Still work
+        // down a priority order rather than grabbing the first non-adjacent
+        // name blind to everything else: eligible candidates before
+        // ineligible ones (someone outside the type's queue entirely is
+        // never supposed to work it, the same rule enforced everywhere
+        // else in this function), and among eligible candidates, anyone
+        // with real or future-payable quota before someone with zero quota
+        // for this entire batch (who would otherwise pick up a shift they
+        // were never really due, in this single rarest of corners).
+        const nonAdjacent = doctors.filter(d => !neighborsOf(date).some(n => assign[n] === d.id) && !boundaryBlocked(date, d.id));
+        fallback =
+          nonAdjacent.find(d => (eligibility[d.id]?.[type] ?? true) && ((rawQuota[d.id]?.[type] || 0) > 0 || (futureRealQuota[d.id]?.[type] ?? false)))?.id
+          ?? nonAdjacent.find(d => (eligibility[d.id]?.[type] ?? true))?.id
+          ?? nonAdjacent[0]?.id
+          ?? doctors[0]?.id
+          ?? null;
+      }
       if (fallback) {
         assign[date] = fallback;
         remaining[fallback][type] = (remaining[fallback][type] ?? 0) - 1;
