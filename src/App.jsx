@@ -469,26 +469,34 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
       // someone's stated unavailability, prefer "borrowing" against a
       // future month: assign anyone who is actually available, structurally
       // eligible for this type (in the relevant master queue — see
-      // computeTypeEligibility), *actually has some of this month's own
-      // master-schedule quota for this type* (rawQuota, not the debt-padded
-      // target — someone whose queue turn just hasn't come up this month at
-      // all is a different situation from someone who used up a real
-      // allotment), and not calendar-adjacent to an existing assignment
-      // today, even though it puts them over their own quota for this month
-      // specifically. That overage becomes debt (see debtOut below) for the
-      // batch generator — or a future single-month regeneration — to
-      // correct going forward. A real availability constraint is not
-      // something a later month can fix after the fact; an exact quota
-      // match is, so it loses this tie-break. Eligibility and having real
-      // quota this month, unlike the debt-padded target, are never traded
-      // away here.
-      const borrowCandidates = doctors
-        .map(d => d.id)
-        .filter(id => (eligibility[id]?.[type] ?? true) && (rawQuota[id]?.[type] || 0) > 0 && !unavailSet[id].has(date) && !neighborsOf(date).some(n => assign[n] === id) && !boundaryBlocked(date, id))
-        .sort((a, b) => (remaining[b]?.[type] ?? 0) - (remaining[a]?.[type] ?? 0)); // least-over-quota first
+      // computeTypeEligibility), and not calendar-adjacent to an existing
+      // assignment today, even though it puts them over their own quota for
+      // this month specifically. That overage becomes debt (see debtOut
+      // below) for the batch generator — or a future single-month
+      // regeneration — to correct going forward.
+      //
+      // Two tiers, in order: first someone who already has real quota this
+      // month (rawQuota > 0 — they used up a genuine allotment, the most
+      // ordinary kind of "over quota"), then — only if nobody like that
+      // exists — someone eligible but whose queue turn just hasn't landed
+      // this month at all (rawQuota 0). That second tier is exactly what an
+      // admin reaches for by hand when the alternative is forcing someone
+      // onto a day they declared unavailable: e.g. borrowing a colleague's
+      // NEXT month's holiday quota into this month, because paying it back
+      // later is recoverable and a real availability violation is not. Only
+      // once both tiers come up empty do we fall through to overriding
+      // availability below.
+      const eligibleAvailable = id => (eligibility[id]?.[type] ?? true) && !unavailSet[id].has(date) && !neighborsOf(date).some(n => assign[n] === id) && !boundaryBlocked(date, id);
+      const byLeastOverQuota = (a, b) => (remaining[b]?.[type] ?? 0) - (remaining[a]?.[type] ?? 0);
+      const borrowCandidates = doctors.map(d => d.id).filter(id => eligibleAvailable(id) && (rawQuota[id]?.[type] || 0) > 0).sort(byLeastOverQuota);
+      const zeroQuotaBorrowCandidates = doctors.map(d => d.id).filter(id => eligibleAvailable(id) && (rawQuota[id]?.[type] || 0) === 0).sort(byLeastOverQuota);
 
       if (borrowCandidates.length > 0) {
         place(date, borrowCandidates[0], type);
+        return;
+      }
+      if (zeroQuotaBorrowCandidates.length > 0) {
+        place(date, zeroQuotaBorrowCandidates[0], type);
         return;
       }
 
