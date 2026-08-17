@@ -13,7 +13,7 @@ import {
   getQueueState, setQueueState,
 } from './storage';
 import LoginScreen from './LoginScreen';
-import MasterScheduleGenerator, { detectGroups, ltFor } from './MasterScheduleGenerator';
+import MasterScheduleGenerator, { detectGroups, ltFor, resolveQueue, DEFAULT_WDQ_NAMES, DEFAULT_H12Q_NAMES, DEFAULT_H3Q_NAMES } from './MasterScheduleGenerator';
 
 /* ---------------------------------- constants ---------------------------------- */
 
@@ -197,6 +197,27 @@ function exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSche
   return { solved, timedOut, assign };
 }
 
+// A doctor's master-queue membership (WDQ = weekday queue, H12Q/H3Q = the two
+// holiday queues, H3Q shared by the h3/h4/h5 loop types) is a STRUCTURAL fact
+// about them, not something that varies month to month — someone absent from
+// every holiday queue is never meant to work a holiday shift at all, the same
+// way an unavailable date is never meant to be worked. A doctor's master
+// quota for a type they're not queued for is always 0 (the queue rotation
+// itself never assigns them one), but relying on that alone isn't enough: the
+// "borrow" fallback in buildCurrentSchedule deliberately ignores quota to
+// respect availability, and without this check it can just as easily hand a
+// weekday-only doctor a holiday shift they were never eligible for.
+function computeTypeEligibility(doctors, queueState) {
+  const wdq = new Set(resolveQueue(queueState?.WDQ ?? DEFAULT_WDQ_NAMES, doctors));
+  const h12q = new Set(resolveQueue(queueState?.H12Q ?? DEFAULT_H12Q_NAMES, doctors));
+  const h3q = new Set(resolveQueue(queueState?.H3Q ?? DEFAULT_H3Q_NAMES, doctors));
+  const eligibility = {};
+  doctors.forEach(d => {
+    eligibility[d.id] = { weekday: wdq.has(d.id), holiday: h12q.has(d.id) || h3q.has(d.id) };
+  });
+  return eligibility;
+}
+
 // Regenerates the ENTIRE current-month schedule from scratch. buildCurrentSchedule
 // assigns each doctor EXACTLY their master-schedule quota of weekday and holiday
 // shifts, respecting unavailability and the no-adjacent-days rule.
@@ -227,7 +248,7 @@ function exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSche
 // single month in isolation has enough slack to match its own quota exactly
 // (see the reported bug: a single month can be genuinely infeasible to
 // balance perfectly once marketplace trades have reassigned specific dates).
-function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailability, holidaySet, boundaryPrevId = null, boundaryNextId = null, debtIn = {} }) {
+function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailability, holidaySet, boundaryPrevId = null, boundaryNextId = null, debtIn = {}, eligibility = {} }) {
   const total = daysInMonth(year, month);
   const dates = Array.from({ length: total }, (_, i) => isoDate(year, month, i + 1));
   const dateIndex = {};
@@ -252,14 +273,19 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
   // below is computed against `target`, not `quota`, so whatever the clamp
   // trims off isn't silently lost — it just carries forward as debt again.
   const rawQuota = computeUsage(doctors, masterSchedule, holidaySet);
+  // A doctor absent from a type's master queue entirely (see
+  // computeTypeEligibility) can never target that type, no matter what debt
+  // claims otherwise — their real master quota for it is always 0 anyway, so
+  // this only matters as a safety net against stale/corrupted debt.
   const target = {};
   const quota = {};
   doctors.forEach(d => {
     const base = rawQuota[d.id] || { weekday: 0, holiday: 0 };
     const debt = debtIn[d.id] || {};
+    const elig = eligibility[d.id] || { weekday: true, holiday: true };
     target[d.id] = {
-      weekday: base.weekday + (debt.weekday || 0),
-      holiday: base.holiday + (debt.holiday || 0),
+      weekday: elig.weekday ? base.weekday + (debt.weekday || 0) : 0,
+      holiday: elig.holiday ? base.holiday + (debt.holiday || 0) : 0,
     };
     quota[d.id] = { weekday: Math.max(0, target[d.id].weekday), holiday: Math.max(0, target[d.id].holiday) };
   });
@@ -414,17 +440,21 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
       // No exact-quota assignment exists for this date (solveDate exhausted
       // every relocation it could try). Before resorting to overriding
       // someone's stated unavailability, prefer "borrowing" against a
-      // future month: assign anyone who is actually available and not
-      // calendar-adjacent to an existing assignment today, even though it
-      // puts them over their own quota for this month specifically. That
-      // overage becomes debt (see debtOut below) for the batch generator —
-      // or a future single-month regeneration — to correct going forward.
-      // A real availability constraint is not something a later month can
-      // fix after the fact; an exact quota match is, so it loses this
-      // tie-break.
+      // future month: assign anyone who is actually available, structurally
+      // eligible for this type (in the relevant master queue — see
+      // computeTypeEligibility), and not calendar-adjacent to an existing
+      // assignment today, even though it puts them over their own quota for
+      // this month specifically. That overage becomes debt (see debtOut
+      // below) for the batch generator — or a future single-month
+      // regeneration — to correct going forward. A real availability
+      // constraint is not something a later month can fix after the fact;
+      // an exact quota match is, so it loses this tie-break. Eligibility,
+      // unlike quota, is never traded away here — someone outside a type's
+      // queue entirely isn't "over quota" for it, they're not meant to work
+      // it at all, the same as an unavailable date.
       const borrowCandidates = doctors
         .map(d => d.id)
-        .filter(id => !unavailSet[id].has(date) && !neighborsOf(date).some(n => assign[n] === id) && !boundaryBlocked(date, id))
+        .filter(id => (eligibility[id]?.[type] ?? true) && !unavailSet[id].has(date) && !neighborsOf(date).some(n => assign[n] === id) && !boundaryBlocked(date, id))
         .sort((a, b) => (remaining[b]?.[type] ?? 0) - (remaining[a]?.[type] ?? 0)); // least-over-quota first
 
       if (borrowCandidates.length > 0) {
@@ -513,6 +543,15 @@ function BatchGenerateModal({ year, month, doctors, onClose, onRun, running }) {
     return { year: y, month: m };
   });
   const [result, setResult] = useState(null);
+  // Names still owed a "ยืนยันว่าแจ้งครบแล้ว" for at least one month in the
+  // chosen range — null until checked, [] once checked clean. Mirrors the
+  // single-month generator's pendingCount warning (ConfirmModal further
+  // down), which this batch flow otherwise has no equivalent of: without it
+  // an admin can batch-generate several months while some doctors are still
+  // mid-way through declaring their unavailable dates, silently locking in a
+  // schedule that predates data those doctors hadn't submitted yet.
+  const [pendingNames, setPendingNames] = useState(null);
+  const [checking, setChecking] = useState(false);
 
   const shift = (which, delta) => {
     const setFn = which === 'start' ? setStartYM : setEndYM;
@@ -521,14 +560,43 @@ function BatchGenerateModal({ year, month, doctors, onClose, onRun, running }) {
       if (m < 0) { m = 11; y -= 1; } else if (m > 11) { m = 0; y += 1; }
       return { year: y, month: m };
     });
+    setPendingNames(null); // range changed — stale check, re-check before running
   };
 
   const monthCount = (endYM.year - startYM.year) * 12 + (endYM.month - startYM.month) + 1;
   const invalidRange = monthCount <= 0 || monthCount > 24;
 
-  const handleRun = async () => {
+  const doRun = async () => {
     const res = await onRun(startYM.year, startYM.month, endYM.year, endYM.month);
     setResult(res);
+  };
+
+  const handleRunClick = async () => {
+    if (pendingNames !== null) { await doRun(); return; } // already warned (or clean) for this range
+    setChecking(true);
+    try {
+      const monthsList = [];
+      let cy = startYM.year, cm = startYM.month;
+      while (true) {
+        monthsList.push([cy, cm]);
+        if (cy === endYM.year && cm === endYM.month) break;
+        cm += 1; if (cm > 11) { cm = 0; cy += 1; }
+        if (monthsList.length > 24) break;
+      }
+      const names = new Set();
+      for (const [y, m] of monthsList) {
+        const raw = await getMonthData(monthKey(y, m));
+        if (!raw) continue;
+        const master = raw.masterSchedule || raw.schedule || {};
+        const hasShift = new Set(Object.values(master).filter(Boolean));
+        const confirmed = new Set(raw.unavailabilityConfirmed || []);
+        doctors.forEach(d => { if (hasShift.has(d.id) && !confirmed.has(d.id)) names.add(d.name); });
+      }
+      setPendingNames([...names]);
+      if (names.size === 0) await doRun();
+    } finally {
+      setChecking(false);
+    }
   };
 
   return (
@@ -562,10 +630,21 @@ function BatchGenerateModal({ year, month, doctors, onClose, onRun, running }) {
             ) : (
               <p className="text-xs text-slate-500 mb-3">รวม {monthCount} เดือน — ทุกเดือนที่มีตารางเวรปัจจุบันอยู่แล้วจะถูกจัดใหม่ทับ</p>
             )}
+            {pendingNames && pendingNames.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 mb-3">
+                <p className="font-medium mb-1">⚠️ ยังมี {pendingNames.length} คนที่ยังไม่ยืนยันว่าแจ้งวันไม่สะดวกครบในบางเดือนของช่วงนี้:</p>
+                <p>{pendingNames.join(', ')}</p>
+                <p className="mt-1">ถ้าจัดเวรตอนนี้ แล้วคนเหล่านี้แจ้งวันไม่สะดวกเพิ่มทีหลัง ตารางที่จัดไปแล้วจะไม่ปรับตามให้อัตโนมัติ ต้องจัดใหม่เอง</p>
+              </div>
+            )}
             <div className="flex justify-end gap-2">
-              <button onClick={onClose} disabled={running} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50">ยกเลิก</button>
-              <button onClick={handleRun} disabled={running || invalidRange} className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-teal-600 hover:bg-teal-700 disabled:opacity-50 disabled:cursor-wait">
-                {running ? 'กำลังจัดเวร...' : 'เริ่มจัดเวร'}
+              <button onClick={onClose} disabled={running || checking} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50">ยกเลิก</button>
+              <button
+                onClick={handleRunClick}
+                disabled={running || checking || invalidRange}
+                className={`px-4 py-2 rounded-lg text-sm font-medium text-white disabled:opacity-50 disabled:cursor-wait ${pendingNames && pendingNames.length > 0 ? 'bg-red-600 hover:bg-red-700' : 'bg-teal-600 hover:bg-teal-700'}`}
+              >
+                {checking ? 'กำลังตรวจสอบ...' : running ? 'กำลังจัดเวร...' : (pendingNames && pendingNames.length > 0) ? 'จัดเวรเลย' : 'เริ่มจัดเวร'}
               </button>
             </div>
           </>
@@ -1527,7 +1606,8 @@ export default function App() {
     const boundaryPrevId = prevMonthData ? (effectiveOf(prevMonthData)[isoDate(prevYM.y, prevYM.m, daysInMonth(prevYM.y, prevYM.m))] || null) : null;
     const boundaryNextId = nextMonthData ? (effectiveOf(nextMonthData)[isoDate(nextYM.y, nextYM.m, 1)] || null) : null;
 
-    const { schedule: next, violations } = buildCurrentSchedule({ doctors: activeDoctors, year, month, masterSchedule, unavailability, holidaySet, boundaryPrevId, boundaryNextId });
+    const eligibility = computeTypeEligibility(activeDoctors, queueState);
+    const { schedule: next, violations } = buildCurrentSchedule({ doctors: activeDoctors, year, month, masterSchedule, unavailability, holidaySet, boundaryPrevId, boundaryNextId, eligibility });
     const violationList = [...violations].sort();
     setCurrentSchedule(next);
     setScheduleViolations(violationList);
@@ -1561,6 +1641,11 @@ export default function App() {
       ? { ...(data.currentSchedule || {}), ...(data.scheduleOverrides || {}) }
       : (data.masterSchedule || data.schedule || {}));
 
+    // Queue membership is a structural property of the doctor, not the
+    // month, so it's computed once against the full roster and reused —
+    // each call to buildCurrentSchedule below only reads the entries for
+    // that month's own active doctors.
+    const eligibility = computeTypeEligibility(doctors, queueState);
     let debt = {};
     let prevEffective = null; // in-memory result of the PREVIOUS batch month, for boundary adjacency without an extra round-trip
     const perMonth = [];
@@ -1595,7 +1680,7 @@ export default function App() {
       const { schedule: nextSchedule, violations, debtOut } = buildCurrentSchedule({
         doctors: monthActiveDoctors, year: y, month: m,
         masterSchedule: monthMaster, unavailability: monthUnavail, holidaySet,
-        boundaryPrevId, boundaryNextId, debtIn: debt,
+        boundaryPrevId, boundaryNextId, debtIn: debt, eligibility,
       });
       const violationList = [...violations].sort();
 
