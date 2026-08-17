@@ -275,7 +275,7 @@ function computeTypeEligibility(doctors, queueState) {
 // single month in isolation has enough slack to match its own quota exactly
 // (see the reported bug: a single month can be genuinely infeasible to
 // balance perfectly once marketplace trades have reassigned specific dates).
-function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailability, holidaySet, boundaryPrevId = null, boundaryNextId = null, debtIn = {}, eligibility = {} }) {
+function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailability, holidaySet, boundaryPrevId = null, boundaryNextId = null, debtIn = {}, eligibility = {}, futureRealQuota = {} }) {
   const total = daysInMonth(year, month);
   const dates = Array.from({ length: total }, (_, i) => isoDate(year, month, i + 1));
   const dateIndex = {};
@@ -478,18 +478,25 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
       // Two tiers, in order: first someone who already has real quota this
       // month (rawQuota > 0 — they used up a genuine allotment, the most
       // ordinary kind of "over quota"), then — only if nobody like that
-      // exists — someone eligible but whose queue turn just hasn't landed
-      // this month at all (rawQuota 0). That second tier is exactly what an
-      // admin reaches for by hand when the alternative is forcing someone
-      // onto a day they declared unavailable: e.g. borrowing a colleague's
-      // NEXT month's holiday quota into this month, because paying it back
-      // later is recoverable and a real availability violation is not. Only
-      // once both tiers come up empty do we fall through to overriding
-      // availability below.
+      // exists — someone eligible whose queue turn hasn't landed THIS month
+      // (rawQuota 0) but *will* land in a LATER month of this same batch
+      // (futureRealQuota, computed by the caller by looking ahead across
+      // the whole batch — see generateCurrentScheduleBatch). That second
+      // tier is exactly what an admin reaches for by hand when the
+      // alternative is forcing someone onto a day they declared
+      // unavailable: e.g. borrowing a colleague's NEXT month's holiday
+      // quota into this month, because paying it back later is provably
+      // recoverable (there IS a later month to reduce) and a real
+      // availability violation is not. Someone with no real quota anywhere
+      // in the visible batch at all doesn't qualify for this tier — that's
+      // not a debt that can ever actually be paid back within the window,
+      // just an assignment they were never really due, so it's excluded
+      // and we fall through to overriding availability below instead. Only
+      // once both tiers come up empty does that happen.
       const eligibleAvailable = id => (eligibility[id]?.[type] ?? true) && !unavailSet[id].has(date) && !neighborsOf(date).some(n => assign[n] === id) && !boundaryBlocked(date, id);
       const byLeastOverQuota = (a, b) => (remaining[b]?.[type] ?? 0) - (remaining[a]?.[type] ?? 0);
       const borrowCandidates = doctors.map(d => d.id).filter(id => eligibleAvailable(id) && (rawQuota[id]?.[type] || 0) > 0).sort(byLeastOverQuota);
-      const zeroQuotaBorrowCandidates = doctors.map(d => d.id).filter(id => eligibleAvailable(id) && (rawQuota[id]?.[type] || 0) === 0).sort(byLeastOverQuota);
+      const zeroQuotaBorrowCandidates = doctors.map(d => d.id).filter(id => eligibleAvailable(id) && (rawQuota[id]?.[type] || 0) === 0 && (futureRealQuota[id]?.[type] ?? false)).sort(byLeastOverQuota);
 
       if (borrowCandidates.length > 0) {
         place(date, borrowCandidates[0], type);
@@ -1678,6 +1685,22 @@ export default function App() {
     // each call to buildCurrentSchedule below only reads the entries for
     // that month's own active doctors.
     const eligibility = computeTypeEligibility(doctors, queueState);
+
+    // Every month's raw data is fetched up front (not lazily per iteration)
+    // so a month being solved can see whether each doctor has REAL master
+    // quota (rawQuota > 0, before any debt) in a LATER month of this same
+    // batch — the difference between "borrow from someone whose queue turn
+    // is later this batch" (recoverable, provably paid back by an actual
+    // quota reduction later) and "borrow from someone whose turn never
+    // comes up in this whole window at all" (a debt with nowhere real to
+    // land, sitting unresolved in finalDebt forever). See the
+    // futureRealQuota computation below and its use in buildCurrentSchedule.
+    const rawByMonth = await Promise.all(monthsList.map(([y, m]) => getMonthData(monthKey(y, m))));
+    const rawQuotaByMonth = rawByMonth.map((raw, i) => {
+      const master = (raw && (raw.masterSchedule || raw.schedule)) || {};
+      return computeUsage(doctors, master, holidaySet);
+    });
+
     let debt = {};
     let prevEffective = null; // in-memory result of the PREVIOUS batch month, for boundary adjacency without an extra round-trip
     const perMonth = [];
@@ -1685,8 +1708,15 @@ export default function App() {
     for (let i = 0; i < monthsList.length; i++) {
       const [y, m] = monthsList[i];
       const mk = monthKey(y, m);
-      const raw = (await getMonthData(mk)) || {};
+      const raw = rawByMonth[i] || {};
       const monthMaster = raw.masterSchedule || raw.schedule || {};
+      const futureRealQuota = {};
+      doctors.forEach(d => {
+        futureRealQuota[d.id] = {
+          weekday: rawQuotaByMonth.slice(i + 1).some(q => (q[d.id]?.weekday || 0) > 0),
+          holiday: rawQuotaByMonth.slice(i + 1).some(q => (q[d.id]?.holiday || 0) > 0),
+        };
+      });
       // A month's stored unavailability never includes recurring rules —
       // those are only ever expanded on the fly against a specific month's
       // calendar (see expandRecurringUnavailability). Reading raw.unavailability
@@ -1720,7 +1750,7 @@ export default function App() {
       const { schedule: nextSchedule, violations, debtOut } = buildCurrentSchedule({
         doctors: monthActiveDoctors, year: y, month: m,
         masterSchedule: monthMaster, unavailability: monthUnavail, holidaySet,
-        boundaryPrevId, boundaryNextId, debtIn: debt, eligibility,
+        boundaryPrevId, boundaryNextId, debtIn: debt, eligibility, futureRealQuota,
       });
       const violationList = [...violations].sort();
 
