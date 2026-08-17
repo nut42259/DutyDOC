@@ -1196,6 +1196,7 @@ export default function App() {
 
   const [toast, setToast] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+  const [pendingAdjacentAssign, setPendingAdjacentAssign] = useState(null);
   // Wraps the current-schedule header + calendar so "บันทึกตารางเวรปัจจุบัน"
   // can capture exactly that region (not the whole page, not the nav
   // buttons above it) as an image.
@@ -1498,12 +1499,8 @@ export default function App() {
     }
   };
 
-  const manualAssignCurrent = (date, docId) => {
+  const applyManualAssignCurrent = (date, docId) => {
     const oldEff = effectiveSchedule[date] || null;
-    if (docId && hasAdjacentAssignment({ ...effectiveSchedule, [date]: docId }, date, docId)) {
-      showToast(`ทำไม่ได้: จะทำให้ ${getDoctor(docId)?.name} อยู่เวรติดกัน`);
-      return;
-    }
     setScheduleOverrides(prev => {
       const next = { ...prev, [date]: docId || null };
       storageSet(monthKey(year, month), { masterSchedule, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleStale, scheduleOverrides: next, unavailability, unavailabilityConfirmed, activeDoctorIds });
@@ -1514,6 +1511,20 @@ export default function App() {
       const newName = docId ? getDoctor(docId)?.name : 'ว่าง';
       addNotification(`ตารางเวรวันที่ ${formatDisplayDate(date)} เปลี่ยนจาก ${oldName} เป็น ${newName}`, `🔔 ตารางเวรวันที่ ${formatDisplayDate(date)} เปลี่ยนแล้ว: ${oldName} → ${newName}`);
     }
+  };
+
+  // Manual edits are a deliberate admin override, not the automatic
+  // generator — so an adjacent-day conflict here is a warn-and-confirm, not
+  // a hard block like it is for buildCurrentSchedule. The admin can see
+  // exactly why (unavailability across the rest of the month, a trade that
+  // already happened, etc.) and may have a real reason only they know
+  // about to accept it anyway.
+  const manualAssignCurrent = (date, docId) => {
+    if (docId && hasAdjacentAssignment({ ...effectiveSchedule, [date]: docId }, date, docId)) {
+      setPendingAdjacentAssign({ date, docId });
+      return;
+    }
+    applyManualAssignCurrent(date, docId);
   };
 
   // The only place the current schedule is actually computed — admin
@@ -2702,6 +2713,16 @@ export default function App() {
         danger={confirmState?.pendingCount > 0}
         onCancel={() => setConfirmState(null)}
         onConfirm={() => { setConfirmState(null); generateCurrentSchedule(); }}
+      />
+
+      <ConfirmModal
+        open={!!pendingAdjacentAssign}
+        title="จัดเวรติดกัน?"
+        body={pendingAdjacentAssign ? `การจัดแบบนี้จะทำให้ ${getDoctor(pendingAdjacentAssign.docId)?.name} อยู่เวรวันที่ ${formatDisplayDate(pendingAdjacentAssign.date)} ติดกับอีกวันที่ตัวเองอยู่เวรอยู่แล้ว ซึ่งปกติระบบจะไม่จัดให้ — ยืนยันว่าต้องการแก้ไขแบบนี้จริงหรือไม่?` : ''}
+        confirmLabel="ยืนยัน อยู่เวรติดกันได้"
+        danger
+        onCancel={() => setPendingAdjacentAssign(null)}
+        onConfirm={() => { applyManualAssignCurrent(pendingAdjacentAssign.date, pendingAdjacentAssign.docId); setPendingAdjacentAssign(null); }}
       />
 
       <ConfirmModal
