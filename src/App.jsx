@@ -197,6 +197,33 @@ function exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSche
   return { solved, timedOut, assign };
 }
 
+// A recurring rule (e.g. "every Sunday", "every 2nd/4th Thursday") only
+// becomes real dates once expanded against a specific month's calendar.
+// unavailability as stored per month never includes these — they're
+// re-derived on the fly wherever they're needed — so anything that reads a
+// month's raw unavailability without also calling this is blind to whatever
+// a doctor's recurring rules cover, and can schedule straight through them.
+function expandRecurringUnavailability(rawUnavail, rules, year, month) {
+  const merged = { ...rawUnavail };
+  const total = daysInMonth(year, month);
+  (rules || []).forEach(({ docId, dow, occurrences }) => {
+    const toAdd = [];
+    let nth = 0;
+    for (let d = 1; d <= total; d++) {
+      if (new Date(year, month, d).getDay() === dow) {
+        nth++;
+        if (occurrences.length === 0 || occurrences.includes(nth)) {
+          toAdd.push(isoDate(year, month, d));
+        }
+      }
+    }
+    if (toAdd.length) {
+      merged[docId] = [...new Set([...(merged[docId] || []), ...toAdd])].sort();
+    }
+  });
+  return merged;
+}
+
 // A doctor's master-queue membership (WDQ = weekday queue, H12Q/H3Q = the two
 // holiday queues, H3Q shared by the h3/h4/h5 loop types) is a STRUCTURAL fact
 // about them, not something that varies month to month — someone absent from
@@ -1291,24 +1318,7 @@ export default function App() {
       // schedule saved at all.
       const rawUnavail = (data && data.unavailability) || {};
       const rules = (queueState || {}).recurringRules || [];
-      const mergedUnavail = { ...rawUnavail };
-      rules.forEach(({ docId, dow, occurrences }) => {
-        const total = new Date(year, month + 1, 0).getDate();
-        const pad2n = n => String(n).padStart(2,'0');
-        const toAdd = [];
-        let nth = 0;
-        for (let d = 1; d <= total; d++) {
-          if (new Date(year, month, d).getDay() === dow) {
-            nth++;
-            if (occurrences.length === 0 || occurrences.includes(nth)) {
-              toAdd.push(`${year}-${pad2n(month+1)}-${pad2n(d)}`);
-            }
-          }
-        }
-        if (toAdd.length) {
-          mergedUnavail[docId] = [...new Set([...(mergedUnavail[docId] || []), ...toAdd])].sort();
-        }
-      });
+      const mergedUnavail = expandRecurringUnavailability(rawUnavail, rules, year, month);
 
       if (!data) {
         setMasterSchedule({}); setMasterOriginal({}); setCurrentSchedule({}); setCurrentScheduleGenerated(false); setScheduleStale(false); setScheduleViolations([]);
@@ -1666,7 +1676,15 @@ export default function App() {
       const mk = monthKey(y, m);
       const raw = (await getMonthData(mk)) || {};
       const monthMaster = raw.masterSchedule || raw.schedule || {};
-      const monthUnavail = raw.unavailability || {};
+      // A month's stored unavailability never includes recurring rules —
+      // those are only ever expanded on the fly against a specific month's
+      // calendar (see expandRecurringUnavailability). Reading raw.unavailability
+      // straight from storage the way single-month generation's live React
+      // state never does would silently ignore every doctor's recurring
+      // unavailable days for any month the admin hasn't individually opened
+      // and saved yet — exactly the kind of month a multi-month batch run is
+      // for.
+      const monthUnavail = expandRecurringUnavailability(raw.unavailability || {}, queueState?.recurringRules || [], y, m);
       const monthActiveIds = raw.activeDoctorIds !== undefined ? raw.activeDoctorIds : null;
       const monthActiveDoctors = monthActiveIds === null ? doctors : doctors.filter(d => monthActiveIds.includes(d.id));
 
