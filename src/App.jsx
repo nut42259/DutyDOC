@@ -469,19 +469,22 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
       // someone's stated unavailability, prefer "borrowing" against a
       // future month: assign anyone who is actually available, structurally
       // eligible for this type (in the relevant master queue — see
-      // computeTypeEligibility), and not calendar-adjacent to an existing
-      // assignment today, even though it puts them over their own quota for
-      // this month specifically. That overage becomes debt (see debtOut
-      // below) for the batch generator — or a future single-month
-      // regeneration — to correct going forward. A real availability
-      // constraint is not something a later month can fix after the fact;
-      // an exact quota match is, so it loses this tie-break. Eligibility,
-      // unlike quota, is never traded away here — someone outside a type's
-      // queue entirely isn't "over quota" for it, they're not meant to work
-      // it at all, the same as an unavailable date.
+      // computeTypeEligibility), *actually has some of this month's own
+      // master-schedule quota for this type* (rawQuota, not the debt-padded
+      // target — someone whose queue turn just hasn't come up this month at
+      // all is a different situation from someone who used up a real
+      // allotment), and not calendar-adjacent to an existing assignment
+      // today, even though it puts them over their own quota for this month
+      // specifically. That overage becomes debt (see debtOut below) for the
+      // batch generator — or a future single-month regeneration — to
+      // correct going forward. A real availability constraint is not
+      // something a later month can fix after the fact; an exact quota
+      // match is, so it loses this tie-break. Eligibility and having real
+      // quota this month, unlike the debt-padded target, are never traded
+      // away here.
       const borrowCandidates = doctors
         .map(d => d.id)
-        .filter(id => (eligibility[id]?.[type] ?? true) && !unavailSet[id].has(date) && !neighborsOf(date).some(n => assign[n] === id) && !boundaryBlocked(date, id))
+        .filter(id => (eligibility[id]?.[type] ?? true) && (rawQuota[id]?.[type] || 0) > 0 && !unavailSet[id].has(date) && !neighborsOf(date).some(n => assign[n] === id) && !boundaryBlocked(date, id))
         .sort((a, b) => (remaining[b]?.[type] ?? 0) - (remaining[a]?.[type] ?? 0)); // least-over-quota first
 
       if (borrowCandidates.length > 0) {
