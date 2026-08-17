@@ -218,7 +218,16 @@ function exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSche
 // these, nothing stops the same doctor landing on both sides of a month
 // boundary — the normal same-month neighbor check has no way to see a day
 // that isn't part of `dates` at all.
-function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailability, holidaySet, boundaryPrevId = null, boundaryNextId = null }) {
+// debtIn = { [docId]: { weekday: N, holiday: N } } — a carry-forward
+// adjustment to this month's quota, positive meaning "owed extra shifts"
+// (fell short in a prior month of the same batch), negative meaning
+// "already got extra" (should get fewer this month). Used by
+// generateCurrentScheduleBatch to make a multi-month run's TOTAL assigned
+// count match the TOTAL master-schedule quota across the batch, even when no
+// single month in isolation has enough slack to match its own quota exactly
+// (see the reported bug: a single month can be genuinely infeasible to
+// balance perfectly once marketplace trades have reassigned specific dates).
+function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailability, holidaySet, boundaryPrevId = null, boundaryNextId = null, debtIn = {} }) {
   const total = daysInMonth(year, month);
   const dates = Array.from({ length: total }, (_, i) => isoDate(year, month, i + 1));
   const dateIndex = {};
@@ -231,11 +240,22 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
   const hasMasterData = Object.values(masterSchedule || {}).some(Boolean);
   if (!hasMasterData) {
     const empty = {}; dates.forEach(d => { empty[d] = null; });
-    return { schedule: empty, violations: [] };
+    return { schedule: empty, violations: [], debtOut: debtIn };
   }
 
-  // Quota = exactly what the master schedule gives each doctor, per type.
-  const quota = computeUsage(doctors, masterSchedule, holidaySet);
+  // Quota = master-schedule quota, adjusted by any carried-in debt from a
+  // prior month in the same batch. Clamped at 0 (can't target a negative
+  // shift count) — debtIn itself is already capped by the caller.
+  const rawQuota = computeUsage(doctors, masterSchedule, holidaySet);
+  const quota = {};
+  doctors.forEach(d => {
+    const base = rawQuota[d.id] || { weekday: 0, holiday: 0 };
+    const debt = debtIn[d.id] || {};
+    quota[d.id] = {
+      weekday: Math.max(0, base.weekday + (debt.weekday || 0)),
+      holiday: Math.max(0, base.holiday + (debt.holiday || 0)),
+    };
+  });
 
   const unavailSet = {};
   doctors.forEach(d => { unavailSet[d.id] = new Set(unavailability[d.id] || []); });
@@ -244,7 +264,9 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
   // this is guaranteed to find it — no heuristic can promise that.
   const exhaustive = exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSchedule, holidaySet, budget: 300000, boundaryBlocked });
   if (exhaustive.solved) {
-    return { schedule: exhaustive.assign, violations: [] };
+    // A perfect solve hits the (debt-adjusted) quota exactly for everyone —
+    // nothing left to carry forward.
+    return { schedule: exhaustive.assign, violations: [], debtOut: {} };
   }
 
   // No perfect assignment found within budget (or proven impossible) — fall
@@ -355,7 +377,31 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
     if (!solveDate(date, new Set(), null)) {
       rollbackTo(mark);
       violations.add(date);
-      // Last resort: keep the nominal owner in place even though this date
+      const type = dayType(date, holidaySet);
+
+      // No exact-quota assignment exists for this date (solveDate exhausted
+      // every relocation it could try). Before resorting to overriding
+      // someone's stated unavailability, prefer "borrowing" against a
+      // future month: assign anyone who is actually available and not
+      // calendar-adjacent to an existing assignment today, even though it
+      // puts them over their own quota for this month specifically. That
+      // overage becomes debt (see debtOut below) for the batch generator —
+      // or a future single-month regeneration — to correct going forward.
+      // A real availability constraint is not something a later month can
+      // fix after the fact; an exact quota match is, so it loses this
+      // tie-break.
+      const borrowCandidates = doctors
+        .map(d => d.id)
+        .filter(id => !unavailSet[id].has(date) && !neighborsOf(date).some(n => assign[n] === id) && !boundaryBlocked(date, id))
+        .sort((a, b) => (remaining[b]?.[type] ?? 0) - (remaining[a]?.[type] ?? 0)); // least-over-quota first
+
+      if (borrowCandidates.length > 0) {
+        place(date, borrowCandidates[0], type);
+        return;
+      }
+
+      // Truly nobody is both available and non-adjacent today — last
+      // resort, keep the nominal owner in place even though this date
       // couldn't be made to satisfy every rule (recorded above so the admin
       // can see exactly which dates need manual attention).
       const nominal = masterSchedule[date];
@@ -363,14 +409,29 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
         ? nominal
         : (doctors.find(d => !neighborsOf(date).some(n => assign[n] === d.id) && !boundaryBlocked(date, d.id))?.id ?? doctors[0]?.id ?? null);
       if (fallback) {
-        const type = dayType(date, holidaySet);
         assign[date] = fallback;
         remaining[fallback][type] = (remaining[fallback][type] ?? 0) - 1;
       }
     }
   });
 
-  return { schedule: assign, violations: [...violations].sort() };
+  // `remaining[docId][type]` already tracks quota-minus-assigned at this
+  // point (every place()/fallback decrement mutated it directly) — exactly
+  // the leftover debt to carry into the next month of the batch. Positive =
+  // still owed extra (fell short); negative = got more than the adjusted
+  // target (the fallback path can over-assign the nominal owner without
+  // checking remaining capacity, which is fine — it self-corrects here
+  // instead of silently vanishing). Clamped to ±2 per type, matching the
+  // master-queue debt convention, so one bad month can't demand an
+  // impossible correction three months later.
+  const debtOut = {};
+  doctors.forEach(d => {
+    const w = Math.max(-2, Math.min(2, remaining[d.id]?.weekday || 0));
+    const h = Math.max(-2, Math.min(2, remaining[d.id]?.holiday || 0));
+    if (w !== 0 || h !== 0) debtOut[d.id] = { weekday: w, holiday: h };
+  });
+
+  return { schedule: assign, violations: [...violations].sort(), debtOut };
 }
 
 
@@ -418,6 +479,109 @@ function ConfirmModal({ open, title, body, confirmLabel = 'ยืนยัน', 
           <button onClick={onCancel} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 transition-colors">ยกเลิก</button>
           <button onClick={onConfirm} className={`px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${danger ? 'bg-red-600 hover:bg-red-700' : 'bg-teal-600 hover:bg-teal-700'}`}>{confirmLabel}</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Lets admin pick a month range and generate all of them in one sequential
+// run, carrying quota debt forward between months (see
+// generateCurrentScheduleBatch) so the batch's total ends up matching the
+// batch's total master-schedule quota even when no single month can on its
+// own. Shows a per-month result + any leftover unresolved debt once done.
+function BatchGenerateModal({ year, month, doctors, onClose, onRun, running }) {
+  const [startYM, setStartYM] = useState({ year, month });
+  const [endYM, setEndYM] = useState(() => {
+    let m = month + 3, y = year;
+    if (m > 11) { m -= 12; y += 1; }
+    return { year: y, month: m };
+  });
+  const [result, setResult] = useState(null);
+
+  const shift = (which, delta) => {
+    const setFn = which === 'start' ? setStartYM : setEndYM;
+    setFn(prev => {
+      let m = prev.month + delta, y = prev.year;
+      if (m < 0) { m = 11; y -= 1; } else if (m > 11) { m = 0; y += 1; }
+      return { year: y, month: m };
+    });
+  };
+
+  const monthCount = (endYM.year - startYM.year) * 12 + (endYM.month - startYM.month) + 1;
+  const invalidRange = monthCount <= 0 || monthCount > 24;
+
+  const handleRun = async () => {
+    const res = await onRun(startYM.year, startYM.month, endYM.year, endYM.month);
+    setResult(res);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+      <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-5 font-body">
+        <h3 className="font-display font-semibold text-slate-800 text-lg mb-1">จัดตารางเวรปัจจุบันหลายเดือน</h3>
+        <p className="text-xs text-slate-400 mb-4">ระบบจะจัดทีละเดือนตามลำดับ ยกยอดจำนวนเวรที่ขาด/เกินไปชดเชยในเดือนถัดไป เพื่อให้รวมทั้งช่วงตรงกับโควตาต้นแบบล่าสุด</p>
+
+        {!result ? (
+          <>
+            <div className="space-y-3 mb-4">
+              <div>
+                <p className="text-xs font-medium text-slate-600 mb-1">จากเดือน</p>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => shift('start', -1)} disabled={running} className="p-1.5 rounded-lg hover:bg-slate-100 disabled:opacity-40"><ChevronLeft size={16} /></button>
+                  <span className="text-sm text-slate-800 flex-1 text-center">{THAI_MONTHS[startYM.month]} {startYM.year + 543}</span>
+                  <button onClick={() => shift('start', 1)} disabled={running} className="p-1.5 rounded-lg hover:bg-slate-100 disabled:opacity-40"><ChevronRight size={16} /></button>
+                </div>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-slate-600 mb-1">ถึงเดือน</p>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => shift('end', -1)} disabled={running} className="p-1.5 rounded-lg hover:bg-slate-100 disabled:opacity-40"><ChevronLeft size={16} /></button>
+                  <span className="text-sm text-slate-800 flex-1 text-center">{THAI_MONTHS[endYM.month]} {endYM.year + 543}</span>
+                  <button onClick={() => shift('end', 1)} disabled={running} className="p-1.5 rounded-lg hover:bg-slate-100 disabled:opacity-40"><ChevronRight size={16} /></button>
+                </div>
+              </div>
+            </div>
+            {invalidRange ? (
+              <p className="text-xs text-red-500 mb-3">ช่วงเดือนไม่ถูกต้อง (ต้องไม่เกิน 24 เดือน และ &quot;ถึงเดือน&quot; ต้องไม่ก่อน &quot;จากเดือน&quot;)</p>
+            ) : (
+              <p className="text-xs text-slate-500 mb-3">รวม {monthCount} เดือน — ทุกเดือนที่มีตารางเวรปัจจุบันอยู่แล้วจะถูกจัดใหม่ทับ</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <button onClick={onClose} disabled={running} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50">ยกเลิก</button>
+              <button onClick={handleRun} disabled={running || invalidRange} className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-teal-600 hover:bg-teal-700 disabled:opacity-50 disabled:cursor-wait">
+                {running ? 'กำลังจัดเวร...' : 'เริ่มจัดเวร'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="space-y-1.5 mb-4 max-h-64 overflow-y-auto pr-1">
+              {result.perMonth.map(r => (
+                <p key={`${r.year}-${r.month}`} className="text-xs text-slate-600 flex items-center justify-between">
+                  <span>{THAI_MONTHS[r.month]} {r.year + 543}</span>
+                  <span className={r.violations > 0 ? 'text-red-500' : 'text-slate-400'}>{r.violations > 0 ? `${r.violations} วันจัดไม่ได้ตรงเงื่อนไข` : 'เรียบร้อย'}</span>
+                </p>
+              ))}
+            </div>
+            {Object.keys(result.finalDebt).length > 0 ? (
+              <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 mb-4">
+                <p className="font-medium mb-1">ยังชดเชยไม่ครบภายในช่วงนี้ (เหลือติดไปเดือนถัดจากช่วงนี้):</p>
+                {Object.entries(result.finalDebt).map(([docId, d]) => {
+                  const doc = doctors.find(x => x.id === docId);
+                  const parts = [];
+                  if (d.weekday) parts.push(`วันธรรมดา ${d.weekday > 0 ? '+' : ''}${d.weekday}`);
+                  if (d.holiday) parts.push(`วันหยุด ${d.holiday > 0 ? '+' : ''}${d.holiday}`);
+                  return <p key={docId}>{doc?.name ?? '?'}: {parts.join(', ')}</p>;
+                })}
+              </div>
+            ) : (
+              <p className="text-xs text-emerald-600 mb-4">ยอดรวมทั้งช่วงตรงกับโควตาต้นแบบล่าสุดครบทุกคนแล้ว</p>
+            )}
+            <div className="flex justify-end">
+              <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-teal-600 hover:bg-teal-700">เสร็จสิ้น</button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -928,6 +1092,8 @@ export default function App() {
   // very month) left the pointers, not "right before this month ran".
   const [monthQueueSnapshot, setMonthQueueSnapshot] = useState(null);
   const [showMasterGen, setShowMasterGen] = useState(false);
+  const [showBatchGen, setShowBatchGen] = useState(false);
+  const [batchGenerating, setBatchGenerating] = useState(false);
   // Admin can pick a different doctor to highlight/recheck in the current &
   // master schedule calendars, instead of only ever seeing their own shifts
   // ringed. null = show the admin's own (default).
@@ -1356,6 +1522,89 @@ export default function App() {
     const msg = `จัดเวรตารางเวรปัจจุบันสำหรับเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว${violationList.length ? ` (มี ${violationList.length} วันที่จัดให้ตรงเงื่อนไขไม่ได้แม้ลองสลับเวรหลายคู่แล้ว — เจ้าของเวรเดิมต้องอยู่แทน)` : ''}`;
     await addNotification(msg, `🔀 ${msg}`);
     showToast('จัดเวรเรียบร้อย');
+  };
+
+  // Generates a run of consecutive months' current schedules in one go,
+  // carrying leftover quota debt forward from each month into the next
+  // (see buildCurrentSchedule's debtIn/debtOut) so the batch's TOTAL actual
+  // assignments end up matching the batch's TOTAL master-schedule quota,
+  // even where any single month in isolation couldn't (a real limitation —
+  // marketplace trades can reassign specific dates in ways that make one
+  // month, on its own, mathematically unable to hit its own quota exactly).
+  const generateCurrentScheduleBatch = async (startY, startM, endY, endM) => {
+    const monthsList = [];
+    let cy = startY, cm = startM;
+    while (true) {
+      monthsList.push([cy, cm]);
+      if (cy === endY && cm === endM) break;
+      cm += 1; if (cm > 11) { cm = 0; cy += 1; }
+      if (monthsList.length > 24) break; // safety cap — batches this long aren't a real workflow
+    }
+
+    const effectiveOf = (data) => !data ? {} : (data.currentScheduleGenerated
+      ? { ...(data.currentSchedule || {}), ...(data.scheduleOverrides || {}) }
+      : (data.masterSchedule || data.schedule || {}));
+
+    let debt = {};
+    let prevEffective = null; // in-memory result of the PREVIOUS batch month, for boundary adjacency without an extra round-trip
+    const perMonth = [];
+
+    for (let i = 0; i < monthsList.length; i++) {
+      const [y, m] = monthsList[i];
+      const mk = monthKey(y, m);
+      const raw = (await getMonthData(mk)) || {};
+      const monthMaster = raw.masterSchedule || raw.schedule || {};
+      const monthUnavail = raw.unavailability || {};
+      const monthActiveIds = raw.activeDoctorIds !== undefined ? raw.activeDoctorIds : null;
+      const monthActiveDoctors = monthActiveIds === null ? doctors : doctors.filter(d => monthActiveIds.includes(d.id));
+
+      let boundaryPrevId;
+      if (i > 0) {
+        const [py, pm] = monthsList[i - 1];
+        boundaryPrevId = prevEffective[isoDate(py, pm, daysInMonth(py, pm))] || null;
+      } else {
+        const prevYM = m === 0 ? { y: y - 1, m: 11 } : { y, m: m - 1 };
+        const prevData = await getMonthData(monthKey(prevYM.y, prevYM.m));
+        boundaryPrevId = effectiveOf(prevData)[isoDate(prevYM.y, prevYM.m, daysInMonth(prevYM.y, prevYM.m))] || null;
+      }
+      // The next month, whether inside or outside this batch, hasn't been
+      // (re)generated by the time we get here in a forward sequential run —
+      // same best-effort fallback the single-month generator already uses
+      // (its master schedule's nominal owner) when the next month has no
+      // current schedule yet.
+      const nextYM = m === 11 ? { y: y + 1, m: 0 } : { y, m: m + 1 };
+      const nextData = await getMonthData(monthKey(nextYM.y, nextYM.m));
+      const boundaryNextId = effectiveOf(nextData)[isoDate(nextYM.y, nextYM.m, 1)] || null;
+
+      const { schedule: nextSchedule, violations, debtOut } = buildCurrentSchedule({
+        doctors: monthActiveDoctors, year: y, month: m,
+        masterSchedule: monthMaster, unavailability: monthUnavail, holidaySet,
+        boundaryPrevId, boundaryNextId, debtIn: debt,
+      });
+      const violationList = [...violations].sort();
+
+      await setMonthData(mk, { ...raw, currentSchedule: nextSchedule, scheduleViolations: violationList, currentScheduleGenerated: true, scheduleStale: false, scheduleOverrides: {} });
+      if (y === year && m === month) {
+        setCurrentSchedule(nextSchedule);
+        setScheduleViolations(violationList);
+        setCurrentScheduleGenerated(true);
+        setScheduleStale(false);
+        setScheduleOverrides({});
+      }
+
+      // buildCurrentSchedule only tracks debt for doctors active THIS month —
+      // preserve anyone else's carried-in debt unchanged so it isn't
+      // silently dropped just because they had no shifts this month.
+      const activeIdSet = new Set(monthActiveDoctors.map(d => d.id));
+      const mergedDebt = { ...debtOut };
+      Object.keys(debt).forEach(id => { if (!activeIdSet.has(id) && debt[id]) mergedDebt[id] = debt[id]; });
+
+      perMonth.push({ year: y, month: m, violations: violationList.length, debtOut: mergedDebt });
+      prevEffective = nextSchedule;
+      debt = mergedDebt;
+    }
+
+    return { monthsList, perMonth, finalDebt: debt };
   };
 
   // Manually wipe the current schedule back to its "not generated" default —
@@ -1960,6 +2209,12 @@ export default function App() {
                       </button>
                     );
                   })()}
+                  <button
+                    onClick={() => setShowBatchGen(true)}
+                    className="flex items-center gap-1.5 text-sm font-medium text-indigo-700 border border-indigo-200 hover:bg-indigo-50 px-3 py-2 rounded-lg transition-colors"
+                  >
+                    <CalendarCheck size={14} /> จัดหลายเดือน
+                  </button>
                   {currentScheduleGenerated && (
                     <button
                       onClick={() => setConfirmState({ type: 'clear-current' })}
@@ -2382,6 +2637,27 @@ export default function App() {
           queueState={monthQueueSnapshot || queueState}
           onConfirm={handleMasterGenConfirm}
           onClose={() => setShowMasterGen(false)}
+        />
+      )}
+
+      {showBatchGen && (
+        <BatchGenerateModal
+          year={year} month={month} doctors={doctors}
+          running={batchGenerating}
+          onClose={() => { if (!batchGenerating) setShowBatchGen(false); }}
+          onRun={async (sy, sm, ey, em) => {
+            setBatchGenerating(true);
+            try {
+              const res = await generateCurrentScheduleBatch(sy, sm, ey, em);
+              const totalViolations = res.perMonth.reduce((s, r) => s + r.violations, 0);
+              const debtCount = Object.keys(res.finalDebt).length;
+              const msg = `จัดตารางเวรปัจจุบันหลายเดือนสำเร็จ (${res.monthsList.length} เดือน)${totalViolations ? ` มี ${totalViolations} วันจัดให้ตรงเงื่อนไขไม่ได้` : ''}${debtCount ? ` — ยังมี ${debtCount} คนชดเชยไม่ครบภายในช่วงนี้` : ''}`;
+              await addNotification(msg, `🔀 ${msg}`);
+              return res;
+            } finally {
+              setBatchGenerating(false);
+            }
+          }}
         />
       )}
     </div>
