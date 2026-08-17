@@ -94,6 +94,48 @@ function hasAdjacentAssignment(scheduleLike, date, doctorId) {
   return scheduleLike[prevIso] === doctorId || scheduleLike[nextIso] === doctorId;
 }
 
+// Live check, not a stored snapshot: re-derives which dates in the CURRENT
+// effective schedule (generated + manual overrides on top) break a hard
+// rule right now — assigned to someone who declared that date unavailable,
+// or calendar-adjacent to their own other shift. Deliberately independent
+// of scheduleViolations (the one-time record of what buildCurrentSchedule's
+// generator couldn't resolve at generation time) — that snapshot goes stale
+// the moment an admin manually overrides a date afterward, in either
+// direction: it won't flag a NEW violation a manual edit just introduced,
+// and it keeps flagging an OLD one the admin already fixed by hand.
+function computeScheduleViolations(scheduleLike, unavailability) {
+  const violations = new Set();
+  Object.entries(scheduleLike).forEach(([date, docId]) => {
+    if (!docId) return;
+    if ((unavailability[docId] || []).includes(date)) violations.add(date);
+    if (hasAdjacentAssignment(scheduleLike, date, docId)) violations.add(date);
+  });
+  return violations;
+}
+
+// Soft preference only — every caller uses this strictly as a tiebreak
+// AFTER the real sort criteria (nominal owner, quota need), never in place
+// of them, so it can't cause a date to go unfilled or push anyone over
+// quota; it only nudges which otherwise-equally-good candidate gets tried
+// first. Rewards whoever's nearest OTHER shift this month is farther from
+// `date`, so a doctor's shifts naturally spread out to a few empty days
+// apart instead of clustering at the tightest legally-allowed 1-day gap
+// whenever there's a real choice available. d=1 (calendar-adjacent) is
+// already excluded before candidates ever reach a sort, so the scale here
+// starts at d=2 (one empty day between shifts, the tightest still-legal
+// spacing) and rewards up to d=5 (four empty days) as progressively
+// better; beyond that, or no other shift within the window at all, is
+// treated as equally spread-out.
+function spacingScore(assign, dateIndex, dates, date, docId) {
+  const idx = dateIndex[date];
+  for (let d = 2; d <= 5; d++) {
+    if ((dates[idx - d] && assign[dates[idx - d]] === docId) || (dates[idx + d] && assign[dates[idx + d]] === docId)) {
+      return d;
+    }
+  }
+  return 6;
+}
+
 // IMPORTANT: different xlsx builds (Node vs. the browser bundle used in
 // artifacts) can construct { cellDates: true } Date objects slightly
 // differently, which caused a silent one-day shift depending on environment.
@@ -153,11 +195,14 @@ function exhaustiveSolveSchedule({ dates, doctors, quota, unavailSet, masterSche
       .filter(id => (remaining[id]?.[type] || 0) > 0 && !unavailSet[id].has(date) && !neighborsOf(date).some(n => assign[n] === id) && !boundaryBlocked(date, id))
       .sort((a, b) => {
         // Preference only (doesn't affect completeness): try the master's
-        // nominal owner first, then whoever needs shifts of this type most.
+        // nominal owner first, then whoever needs shifts of this type most,
+        // then — only among ties on those — whoever it'd spread out better.
         if (a === nominal) return -1;
         if (b === nominal) return 1;
         const qa = quota[a]?.[type] || 1, qb = quota[b]?.[type] || 1;
-        return ((remaining[b]?.[type] ?? 0) / qb) - ((remaining[a]?.[type] ?? 0) / qa);
+        const ratioDiff = ((remaining[b]?.[type] ?? 0) / qb) - ((remaining[a]?.[type] ?? 0) / qa);
+        if (Math.abs(ratioDiff) > 1e-9) return ratioDiff;
+        return spacingScore(assign, dateIndex, dates, date, b) - spacingScore(assign, dateIndex, dates, date, a);
       });
   };
 
@@ -403,7 +448,9 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
         if (a === nominal) return -1;
         if (b === nominal) return 1;
         const qa = quota[a]?.[type] || 1, qb = quota[b]?.[type] || 1;
-        return ((remaining[b]?.[type] ?? 0) / qb) - ((remaining[a]?.[type] ?? 0) / qa);
+        const ratioDiff = ((remaining[b]?.[type] ?? 0) / qb) - ((remaining[a]?.[type] ?? 0) / qa);
+        if (Math.abs(ratioDiff) > 1e-9) return ratioDiff;
+        return spacingScore(assign, dateIndex, dates, date, b) - spacingScore(assign, dateIndex, dates, date, a);
       });
 
     for (const docId of candidates) {
@@ -494,7 +541,11 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
       // and we fall through to overriding availability below instead. Only
       // once both tiers come up empty does that happen.
       const eligibleAvailable = id => (eligibility[id]?.[type] ?? true) && !unavailSet[id].has(date) && !neighborsOf(date).some(n => assign[n] === id) && !boundaryBlocked(date, id);
-      const byLeastOverQuota = (a, b) => (remaining[b]?.[type] ?? 0) - (remaining[a]?.[type] ?? 0);
+      const byLeastOverQuota = (a, b) => {
+        const diff = (remaining[b]?.[type] ?? 0) - (remaining[a]?.[type] ?? 0);
+        if (diff !== 0) return diff;
+        return spacingScore(assign, dateIndex, dates, date, b) - spacingScore(assign, dateIndex, dates, date, a);
+      };
       const borrowCandidates = doctors.map(d => d.id).filter(id => eligibleAvailable(id) && (rawQuota[id]?.[type] || 0) > 0).sort(byLeastOverQuota);
       const zeroQuotaBorrowCandidates = doctors.map(d => d.id).filter(id => eligibleAvailable(id) && (rawQuota[id]?.[type] || 0) === 0 && (futureRealQuota[id]?.[type] ?? false)).sort(byLeastOverQuota);
 
@@ -1181,7 +1232,7 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
               <div className="flex items-center justify-between">
                 <span className={`font-mono text-[11px] ${type === 'holiday' ? 'text-rose-700' : 'text-slate-500'}`}>{dayNum}</span>
                 {hasOpenPost && <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />}
-                {isViolation && <span className="text-[10px] leading-none" title="จัดให้ตรงเงื่อนไขไม่ได้แม้ลองสลับเวรหลายคู่แล้ว เจ้าของเวรเดิมจึงอยู่แทนไปก่อน">⚠️</span>}
+                {isViolation && <span className="text-[10px] leading-none" title="วันนี้ไม่ตรงเงื่อนไข: อยู่เวรวันที่แจ้งไม่สะดวก หรืออยู่เวรติดกัน">⚠️</span>}
               </div>
               {isEditing ? (
                 <select autoFocus className="text-[11px] font-body border rounded p-0.5 w-full" value={docId || ''} onClick={(e) => e.stopPropagation()} onChange={(e) => { onAssign(date, e.target.value || null); setEditingDate(null); }} onBlur={() => setEditingDate(null)}>
@@ -1314,6 +1365,14 @@ export default function App() {
     Object.keys(scheduleOverrides).forEach(date => { eff[date] = scheduleOverrides[date]; });
     return eff;
   }, [currentSchedule, scheduleOverrides]);
+
+  // Recomputed on every render the effective schedule or unavailability
+  // changes — see computeScheduleViolations for why this replaced reading
+  // the stored scheduleViolations snapshot directly in the calendar.
+  const liveViolations = useMemo(
+    () => computeScheduleViolations(effectiveSchedule, unavailability),
+    [effectiveSchedule, unavailability]
+  );
 
   // Cross-device data (doctor roster, queue state, marketplace posts,
   // notifications) is only ever fetched here — there's no realtime sync, so
@@ -2476,17 +2535,17 @@ export default function App() {
                     allDoctors={doctors} selectableDoctors={activeDoctors}
                     holidaySet={holidaySet} unavailability={unavailability} marketplace={marketplace}
                     compareTo={currentSchedule} highlightDoctorId={highlightDoctorId}
-                    violationDates={scheduleViolations}
+                    violationDates={[...liveViolations]}
                   />
                 </div>
-                {role === 'admin' && <p className="text-xs text-slate-400 mt-2 flex items-center gap-1"><Info size={12} /> แถบสีฟ้าด้านซ้ายของช่อง = วันนี้ถูกแก้ไขเฉพาะจุดด้วยมือ · ⚠️ = จัดให้ตรงเงื่อนไขไม่ได้แม้ลองสลับเวรหลายคู่แล้ว เจ้าของเวรเดิมจึงอยู่แทน</p>}
+                {role === 'admin' && <p className="text-xs text-slate-400 mt-2 flex items-center gap-1"><Info size={12} /> แถบสีฟ้าด้านซ้ายของช่อง = วันนี้ถูกแก้ไขเฉพาะจุดด้วยมือ · ⚠️ = วันนี้ไม่ตรงเงื่อนไข (อยู่เวรวันที่แจ้งไม่สะดวก หรืออยู่เวรติดกัน) ไม่ว่าจะมาจากตอนจัดเวรหรือแก้ไขเองทีหลัง</p>}
 
-                {scheduleViolations.length > 0 && (
+                {liveViolations.size > 0 && (
                   <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5 flex items-start gap-2">
                     <span className="text-amber-500 text-base shrink-0">⚠️</span>
                     <div>
-                      <p className="text-xs font-medium text-amber-800 mb-0.5">มี {scheduleViolations.length} วันที่จัดไม่ตรงเงื่อนไข</p>
-                      <p className="text-xs text-amber-700">ระบบลองสลับ/โยกเวรหลายคู่แล้วแต่ยังหาทางจัดให้ตรงโควตาและไม่ติดกันไม่ได้สำหรับวันเหล่านี้ (อาจเพราะไม่สะดวกทับซ้อนกันหลายคน หรือโควตาไม่พอ) จึงให้เจ้าของเวรเดิมในตารางต้นแบบอยู่เวรแทนไปก่อน — ลองแก้ไขเฉพาะจุดเองด้านบน: {scheduleViolations.map(d => formatDisplayDate(d)).join(', ')}</p>
+                      <p className="text-xs font-medium text-amber-800 mb-0.5">มี {liveViolations.size} วันที่ไม่ตรงเงื่อนไขอยู่ตอนนี้</p>
+                      <p className="text-xs text-amber-700">แต่ละวันด้านล่างนี้ มีคนอยู่เวรวันที่ตัวเองแจ้งไม่สะดวก หรืออยู่เวรติดกัน — ไม่ว่าจะเกิดจากตอนจัดเวรอัตโนมัติหรือแก้ไขเองทีหลังก็ตาม ลองแก้ไขเฉพาะจุดเองด้านบน: {[...liveViolations].sort().map(d => formatDisplayDate(d)).join(', ')}</p>
                     </div>
                   </div>
                 )}
