@@ -1484,7 +1484,23 @@ export default function App() {
     try {
       // Lazy-loaded, same reasoning as html2canvas above — only needed for
       // this one rare export click.
-      const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, VerticalAlign, BorderStyle } = await import('docx');
+      const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, VerticalAlign, BorderStyle, TabStopType } = await import('docx');
+
+      const DOC_FONT = 'TH SarabunPSK';
+      const TABLE_SIZE = 28; // 14pt — docx sizes are in half-points
+      const BODY_SIZE = 32;  // 16pt
+      // Where the surname column starts within a name cell, so "นพ.ณัชพล"
+      // and "พญ.ธัญลักษณ์" (different lengths) both land their surname at
+      // the same horizontal position — matches the original paper roster's
+      // tab-aligned layout rather than left-packing name+surname together.
+      // Tight enough that the longest head + tab + surname still fits one
+      // line at TABLE_SIZE within a name column's own share of the (now
+      // narrower date columns') width — see DATE_COL_WIDTH below.
+      const SURNAME_TAB_TWIPS = 600;
+      const DATE_COL_WIDTH = 7; // was 12 — narrower date/day-name columns
+      // free up width for the three name columns without changing the
+      // date column PAIR's overall 1:1 ratio to each other.
+      const NAME_COL_WIDTH = (100 - DATE_COL_WIDTH * 2) / 3;
 
       // Day 1's 00:01-08:00 slot belongs to whoever covered the tail end
       // of the PREVIOUS month — not visible anywhere in this month's own
@@ -1498,12 +1514,19 @@ export default function App() {
 
       const rows = buildDutyRosterRows(year, month, effectiveSchedule, prevDayDoctorId, holidaySet);
 
+      // { head: "นพ.ณัชพล", surname: "ทวีสกุลชัย" } — split on the LAST
+      // space, since every DOCTOR_FULL_NAME entry is "prefix+firstname
+      // surname" with exactly one space there.
       const nameOf = (docId) => {
-        if (!docId) return '';
+        if (!docId) return null;
         const doc = doctors.find(d => d.id === docId);
-        if (!doc) return '';
-        return DOCTOR_FULL_NAME[doc.name] || doc.name;
+        if (!doc) return null;
+        const full = DOCTOR_FULL_NAME[doc.name] || doc.name;
+        const idx = full.lastIndexOf(' ');
+        return idx === -1 ? { head: full, surname: '' } : { head: full.slice(0, idx), surname: full.slice(idx + 1) };
       };
+
+      const run = (text, opts = {}) => new TextRun({ text, font: DOC_FONT, size: opts.size ?? TABLE_SIZE, bold: !!opts.bold });
 
       const cellBorders = {
         top: { style: BorderStyle.SINGLE, size: 4, color: '000000' },
@@ -1511,22 +1534,39 @@ export default function App() {
         left: { style: BorderStyle.SINGLE, size: 4, color: '000000' },
         right: { style: BorderStyle.SINGLE, size: 4, color: '000000' },
       };
-      const cell = (text, { colSpan = 1, bold = false, shading = null, width } = {}) => new TableCell({
+      const cell = (text, { colSpan = 1, bold = false, shading = null, width, align = AlignmentType.CENTER } = {}) => new TableCell({
         columnSpan: colSpan,
         verticalAlign: VerticalAlign.CENTER,
         borders: cellBorders,
         width: width ? { size: width, type: WidthType.PERCENTAGE } : undefined,
         shading: shading ? { fill: shading } : undefined,
-        children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: text || '', bold })] })],
+        children: [new Paragraph({ alignment: align, children: [run(text || '', { bold })] })],
+      });
+      // A name cell is its own paragraph (not plain cell()) so the surname
+      // can sit on a tab stop instead of being centered as one string.
+      const nameCell = (name, { shading = null, width } = {}) => new TableCell({
+        verticalAlign: VerticalAlign.CENTER,
+        borders: cellBorders,
+        width: width ? { size: width, type: WidthType.PERCENTAGE } : undefined,
+        shading: shading ? { fill: shading } : undefined,
+        children: [
+          name
+            ? new Paragraph({
+                alignment: AlignmentType.LEFT,
+                tabStops: [{ type: TabStopType.LEFT, position: SURNAME_TAB_TWIPS }],
+                children: [run(name.head), run('\t'), run(name.surname)],
+              })
+            : new Paragraph({ children: [] }),
+        ],
       });
 
       const headerRow = new TableRow({
         tableHeader: true,
         children: [
-          cell('วัน เดือน ปี', { colSpan: 2, bold: true, width: 24 }),
-          cell('เวลา 00.01 น. - 08.00 น.', { bold: true, width: 25.33 }),
-          cell('เวลา 08.00 น. - 16.00 น.', { bold: true, width: 25.33 }),
-          cell('เวลา 16.00 น. - 24.00 น.', { bold: true, width: 25.34 }),
+          cell('วัน เดือน ปี', { colSpan: 2, bold: true, width: DATE_COL_WIDTH * 2 }),
+          cell('เวลา 00.01 น. - 08.00 น.', { bold: true, width: NAME_COL_WIDTH }),
+          cell('เวลา 08.00 น. - 16.00 น.', { bold: true, width: NAME_COL_WIDTH }),
+          cell('เวลา 16.00 น. - 24.00 น.', { bold: true, width: NAME_COL_WIDTH }),
         ],
       });
 
@@ -1535,30 +1575,34 @@ export default function App() {
         const shading = dayType(r.date, holidaySet) === 'holiday' ? HOLIDAY_SHADING : null;
         return new TableRow({
           children: [
-            cell(`${r.day} ${THAI_MONTHS_SHORT[month]} ${String(year + 543).slice(-2)}`, { shading, width: 12 }),
-            cell(THAI_WEEKDAYS_FULL[r.dow], { shading, width: 12 }),
-            cell(nameOf(r.slot1), { shading, width: 25.33 }),
-            cell(nameOf(r.slot2), { shading, width: 25.33 }),
-            cell(nameOf(r.slot3), { shading, width: 25.34 }),
+            cell(`${r.day} ${THAI_MONTHS_SHORT[month]} ${String(year + 543).slice(-2)}`, { shading, width: DATE_COL_WIDTH }),
+            cell(THAI_WEEKDAYS_FULL[r.dow], { shading, width: DATE_COL_WIDTH }),
+            nameCell(nameOf(r.slot1), { shading, width: NAME_COL_WIDTH }),
+            nameCell(nameOf(r.slot2), { shading, width: NAME_COL_WIDTH }),
+            nameCell(nameOf(r.slot3), { shading, width: NAME_COL_WIDTH }),
           ],
         });
       });
 
+      // 100% table width is relative to the page's own content area, so
+      // shrinking the left/right margins (below) is what actually makes
+      // the table run nearly edge to edge — the percentage alone doesn't.
       const table = new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...dataRows] });
 
       const doc = new Document({
         sections: [{
+          properties: { page: { margin: { top: 720, bottom: 720, left: 500, right: 500 } } },
           children: [
             new Paragraph({
               alignment: AlignmentType.CENTER,
               spacing: { after: 200 },
-              children: [new TextRun({ text: `เวรประจำหน้าที่กลุ่มงานกุมารเวชกรรม อยู่เวร ประจำเดือน${THAI_MONTHS[month]} ${year + 543}`, bold: true, size: 28 })],
+              children: [run(`เวรประจำหน้าที่กลุ่มงานกุมารเวชกรรม อยู่เวร ประจำเดือน${THAI_MONTHS[month]} ${year + 543}`, { bold: true, size: BODY_SIZE })],
             }),
             table,
             new Paragraph({ spacing: { before: 400 }, children: [] }),
             new Paragraph({ spacing: { before: 200 }, children: [] }),
-            new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `(${DUTY_ROSTER_HEAD_NAME})` })] }),
-            new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: DUTY_ROSTER_HEAD_TITLE })] }),
+            new Paragraph({ alignment: AlignmentType.CENTER, children: [run(`(${DUTY_ROSTER_HEAD_NAME})`, { size: BODY_SIZE })] }),
+            new Paragraph({ alignment: AlignmentType.CENTER, children: [run(DUTY_ROSTER_HEAD_TITLE, { size: BODY_SIZE })] }),
           ],
         }],
       });
