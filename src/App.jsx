@@ -1354,7 +1354,16 @@ export default function App() {
   const saveCurrentScheduleImage = async () => {
     const el = currentScheduleCaptureRef.current;
     if (!el) return;
+    // savingScheduleImage also drives a couple of export-only render tweaks
+    // below (the header drops "ปัจจุบัน", the manual-edit blue-border
+    // indicator is hidden) that only make sense in a saved image, not the
+    // live admin view. Double rAF waits for React to actually commit and
+    // paint that state change before html2canvas captures the DOM — a
+    // single rAF (or none) risks the capture happening before the browser
+    // has applied it.
     setSavingScheduleImage(true);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    await new Promise(resolve => requestAnimationFrame(resolve));
     try {
       // Lazy-loaded — this library is only needed for the rare "save as
       // image" click, no reason to bloat the main bundle everyone downloads.
@@ -2610,13 +2619,13 @@ export default function App() {
                   <DoctorHighlightPicker doctors={activeDoctors} allDoctors={doctors} selectedId={recheckDoctorId} onSelect={setRecheckDoctorId} />
                 )}
                 <div ref={currentScheduleCaptureRef} className="bg-white p-3 rounded-xl">
-                  <p className="font-display font-semibold text-slate-800 text-base mb-2 text-center">ตารางเวรปัจจุบัน — {THAI_MONTHS[month]} {year + 543}</p>
+                  <p className="font-display font-semibold text-slate-800 text-base mb-2 text-center">{savingScheduleImage ? 'ตารางเวร' : 'ตารางเวรปัจจุบัน'} — {THAI_MONTHS[month]} {year + 543}</p>
                   <CalendarGrid
                     year={year} month={month} scheduleData={effectiveSchedule}
                     editable={role === 'admin'} onAssign={manualAssignCurrent}
                     allDoctors={doctors} selectableDoctors={activeDoctors}
                     holidaySet={holidaySet} unavailability={unavailability} marketplace={marketplace}
-                    compareTo={currentSchedule} highlightDoctorId={highlightDoctorId}
+                    compareTo={savingScheduleImage ? null : currentSchedule} highlightDoctorId={highlightDoctorId}
                     violationDates={[...liveViolations]}
                   />
                 </div>
