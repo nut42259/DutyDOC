@@ -50,6 +50,13 @@ const pad2 = (n) => String(n).padStart(2, '0');
 const isoDate = (y, m, d) => `${y}-${pad2(m + 1)}-${pad2(d)}`;
 const genId = () => (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `id-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const monthKey = (y, m) => `month-${y}-${pad2(m + 1)}`;
+// A month's "effective" schedule: whatever's actually in effect for that
+// month right now — the generated current schedule (with manual overrides
+// applied on top) once one exists, otherwise the master schedule as a
+// best-effort stand-in.
+const effectiveOf = (data) => !data ? {} : (data.currentScheduleGenerated
+  ? { ...(data.currentSchedule || {}), ...(data.scheduleOverrides || {}) }
+  : (data.masterSchedule || data.schedule || {}));
 const toCeYear = (y) => (y > 2400 ? y - 543 : y);
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
@@ -103,12 +110,21 @@ function hasAdjacentAssignment(scheduleLike, date, doctorId) {
 // the moment an admin manually overrides a date afterward, in either
 // direction: it won't flag a NEW violation a manual edit just introduced,
 // and it keeps flagging an OLD one the admin already fixed by hand.
-function computeScheduleViolations(scheduleLike, unavailability) {
+// boundary = { prevId, nextId, firstDate, lastDate } — whoever worked the
+// day immediately before day 1 / immediately after the last day, in the
+// NEIGHBORING month's own effective schedule. Without this, adjacency can
+// only ever be checked against dates that are keys in scheduleLike itself,
+// which is scoped to a single month — so nothing catches a manual edit
+// that puts someone on, say, both Dec 31 and Jan 1.
+function computeScheduleViolations(scheduleLike, unavailability, boundary = {}) {
+  const { prevId = null, nextId = null, firstDate = null, lastDate = null } = boundary;
   const violations = new Set();
   Object.entries(scheduleLike).forEach(([date, docId]) => {
     if (!docId) return;
     if ((unavailability[docId] || []).includes(date)) violations.add(date);
     if (hasAdjacentAssignment(scheduleLike, date, docId)) violations.add(date);
+    if (date === firstDate && prevId && docId === prevId) violations.add(date);
+    if (date === lastDate && nextId && docId === nextId) violations.add(date);
   });
   return violations;
 }
@@ -1333,15 +1349,25 @@ export default function App() {
       // pushing everything toward the bottom edge of the saved image.
       // Passing negative scrollX/scrollY corrects for that (the standard
       // fix for this well-known html2canvas issue).
+      //
+      // windowWidth forces html2canvas to lay the page out as if the
+      // browser were this narrow, regardless of how wide the admin's own
+      // window actually is right now — the calendar grid's cells have no
+      // fixed/min pixel width, so at a phone-width viewport they naturally
+      // reflow narrower (doctor names wrapping to a second line instead of
+      // staying on one), which is what turns the capture from the usual
+      // wide desktop layout into a portrait image that's already legible
+      // at native size on a phone, with no artificial padding needed.
+      const MOBILE_CAPTURE_WIDTH = 420;
       const canvas = await html2canvas(el, {
         backgroundColor: '#ffffff', scale: 2,
         scrollX: -window.scrollX, scrollY: -window.scrollY,
-        windowWidth: document.documentElement.scrollWidth,
+        windowWidth: MOBILE_CAPTURE_WIDTH,
         windowHeight: document.documentElement.scrollHeight,
       });
       const link = document.createElement('a');
       link.href = canvas.toDataURL('image/jpeg', 0.92);
-      link.download = `ตารางเวรปัจจุบัน_${THAI_MONTHS[month]}_${year + 543}.jpg`;
+      link.download = `${year + 543}_${pad2(month + 1)}.jpg`;
       link.click();
       showToast('บันทึกรูปภาพเรียบร้อย');
     } catch {
@@ -1366,13 +1392,44 @@ export default function App() {
     return eff;
   }, [currentSchedule, scheduleOverrides]);
 
-  // Recomputed on every render the effective schedule or unavailability
-  // changes — see computeScheduleViolations for why this replaced reading
-  // the stored scheduleViolations snapshot directly in the calendar.
-  const liveViolations = useMemo(
-    () => computeScheduleViolations(effectiveSchedule, unavailability),
-    [effectiveSchedule, unavailability]
-  );
+  // Whoever worked the day immediately before day 1 / immediately after the
+  // last day, in the NEIGHBORING month's own effective schedule — fetched
+  // fresh whenever the viewed month changes, same fresh-read pattern as the
+  // rest of this app (no realtime sync). Needed so the live violation check
+  // below can catch a manual edit that creates a cross-month adjacency
+  // conflict (e.g. Dec 31 and Jan 1 both landing on the same doctor), which
+  // a check scoped to a single month's own data can never see on its own.
+  const [monthBoundary, setMonthBoundary] = useState({ prevId: null, nextId: null });
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const prevYM = month === 0 ? { y: year - 1, m: 11 } : { y: year, m: month - 1 };
+      const nextYM = month === 11 ? { y: year + 1, m: 0 } : { y: year, m: month + 1 };
+      const [prevMonthData, nextMonthData] = await Promise.all([
+        getMonthData(monthKey(prevYM.y, prevYM.m)),
+        getMonthData(monthKey(nextYM.y, nextYM.m)),
+      ]);
+      if (cancelled) return;
+      setMonthBoundary({
+        prevId: prevMonthData ? (effectiveOf(prevMonthData)[isoDate(prevYM.y, prevYM.m, daysInMonth(prevYM.y, prevYM.m))] || null) : null,
+        nextId: nextMonthData ? (effectiveOf(nextMonthData)[isoDate(nextYM.y, nextYM.m, 1)] || null) : null,
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [year, month]);
+
+  // Recomputed on every render the effective schedule, unavailability, or
+  // month boundary changes — see computeScheduleViolations for why this
+  // replaced reading the stored scheduleViolations snapshot directly in the
+  // calendar.
+  const liveViolations = useMemo(() => {
+    const total = daysInMonth(year, month);
+    return computeScheduleViolations(effectiveSchedule, unavailability, {
+      ...monthBoundary,
+      firstDate: isoDate(year, month, 1),
+      lastDate: isoDate(year, month, total),
+    });
+  }, [effectiveSchedule, unavailability, monthBoundary, year, month]);
 
   // Cross-device data (doctor roster, queue state, marketplace posts,
   // notifications) is only ever fetched here — there's no realtime sync, so
@@ -1718,9 +1775,6 @@ export default function App() {
       getMonthData(monthKey(prevYM.y, prevYM.m)),
       getMonthData(monthKey(nextYM.y, nextYM.m)),
     ]);
-    const effectiveOf = (data) => !data ? {} : (data.currentScheduleGenerated
-      ? { ...(data.currentSchedule || {}), ...(data.scheduleOverrides || {}) }
-      : (data.masterSchedule || data.schedule || {}));
     const boundaryPrevId = prevMonthData ? (effectiveOf(prevMonthData)[isoDate(prevYM.y, prevYM.m, daysInMonth(prevYM.y, prevYM.m))] || null) : null;
     const boundaryNextId = nextMonthData ? (effectiveOf(nextMonthData)[isoDate(nextYM.y, nextYM.m, 1)] || null) : null;
 
@@ -1754,10 +1808,6 @@ export default function App() {
       cm += 1; if (cm > 11) { cm = 0; cy += 1; }
       if (monthsList.length > 24) break; // safety cap — batches this long aren't a real workflow
     }
-
-    const effectiveOf = (data) => !data ? {} : (data.currentScheduleGenerated
-      ? { ...(data.currentSchedule || {}), ...(data.scheduleOverrides || {}) }
-      : (data.masterSchedule || data.schedule || {}));
 
     // Queue membership is a structural property of the doctor, not the
     // month, so it's computed once against the full roster and reused —
