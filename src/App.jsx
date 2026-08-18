@@ -1263,35 +1263,39 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                 // replicate implicit flexbox shrink behavior.
                 //
                 // Names stay on one line and shrink to fit instead of
-                // wrapping or truncating — but via a real Tailwind
-                // responsive breakpoint (text-[Npx] sm:text-[Mpx], which
-                // compiles to an actual @media rule), NOT clamp(). clamp()
-                // was tried first and silently failed inside html2canvas
-                // every single time: it kept reproducing the exact original
-                // "text cut off" bug no matter what leading/overflow was
-                // paired with it, while a plain fixed px value (no clamp)
-                // rendered perfectly — meaning html2canvas's own CSS engine
-                // (its own reimplementation, not a real browser) doesn't
-                // parse clamp() correctly. A real media query is a much
-                // older, more basic feature and is exactly what
-                // html2canvas's windowWidth option is documented to affect
-                // correctly. The base (unprefixed) size applies below
-                // Tailwind's sm breakpoint (640px) — true during the
-                // narrow mobile capture — and sm: overrides it back to the
-                // original size on any normal-width admin screen.
+                // wrapping or truncating — via a real Tailwind responsive
+                // breakpoint (text-[Npx] sm:text-[Mpx], an actual @media
+                // rule), not clamp() (silently mis-parsed by html2canvas's
+                // own CSS engine — see git history for that dead end).
+                //
+                // Deliberately NOT setting overflow-x: hidden here, even
+                // though horizontal is the only axis that ever needs
+                // containing: per the CSS overflow spec, pairing
+                // overflow-x: hidden with overflow-y: visible doesn't
+                // actually keep the y-axis visible — the visible value gets
+                // silently forced to compute as auto instead whenever the
+                // other axis is non-visible. html2canvas can't render a
+                // real scrollbar in a static image, so that auto still
+                // reads as clipped — which is what was actually cutting
+                // Thai glyphs off this whole time, in every attempt that
+                // paired the two, regardless of font-size mechanism. No
+                // overflow rule at all (both axes default to visible,
+                // never mismatched) avoids the trap entirely; the shrink-
+                // to-fit sizing already keeps horizontal overflow rare
+                // enough in practice not to need a hard clip as backup.
                 <div className="flex flex-col gap-0.5 min-w-0">
                   <span
-                    className={`block w-full text-center leading-relaxed font-body font-medium rounded px-1 py-1 whitespace-nowrap overflow-x-hidden overflow-y-visible text-[7px] sm:text-[11px] ${color.soft} ${color.text}`}
+                    className={`block w-full text-center leading-relaxed font-body font-medium rounded px-1 py-1 whitespace-nowrap text-[7px] sm:text-[11px] ${color.soft} ${color.text}`}
                   >{doc.name}</span>
                   {traded && (
-                    <span className="block w-full text-center leading-relaxed font-body text-slate-400 line-through whitespace-nowrap overflow-x-hidden overflow-y-visible px-1 text-[6px] sm:text-[9px]">{getDoctor(origId)?.name || '-'}</span>
+                    <span className="block w-full text-center leading-relaxed font-body text-slate-400 line-through whitespace-nowrap px-1 text-[6px] sm:text-[9px]">{getDoctor(origId)?.name || '-'}</span>
                   )}
                 </div>
               ) : (
                 <span className="text-[10px] font-body text-slate-300">ยังไม่กำหนด</span>
               )}
               {unavailDoctors.length > 0 && (
-                <span className="block w-full font-body leading-relaxed text-slate-400 whitespace-nowrap overflow-x-hidden overflow-y-visible text-[6px] sm:text-[9px]">{unavailDoctors.length} คนไม่สะดวก</span>
+                <span className="block w-full font-body leading-relaxed text-slate-400 whitespace-nowrap text-[6px] sm:text-[9px]">{unavailDoctors.length} คนไม่สะดวก</span>
               )}
             </div>
           );
