@@ -1200,7 +1200,7 @@ function OverviewTab({ year, month, doctorsWithShifts, hasMasterData, unavailabi
 
 /* ---------------------------------- calendar grid (shared) ---------------------------------- */
 
-function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctors, selectableDoctors, holidaySet, unavailability, marketplace, compareTo, highlightDoctorId, originalData, violationDates }) {
+function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctors, selectableDoctors, holidaySet, unavailability, marketplace, compareTo, highlightDoctorId, originalData, violationDates, hideUnavailableCount = false }) {
   const [editingDate, setEditingDate] = useState(null);
   const getDoctor = (id) => allDoctors.find(d => d.id === id);
   const doctorIndex = (id) => allDoctors.findIndex(d => d.id === id);
@@ -1283,16 +1283,29 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                 // never mismatched) avoids the trap entirely; the shrink-
                 // to-fit sizing already keeps horizontal overflow rare
                 // enough in practice not to need a hard clip as backup.
+                //
+                // leading-[Npx] instead of Tailwind's leading-relaxed
+                // (line-height: 1.625, a UNITLESS ratio): html2canvas has a
+                // known issue resolving unitless line-height against
+                // font-size, which is what was pushing text toward the
+                // bottom of its own padded box in the saved image while a
+                // real browser (this preview, or the live admin view)
+                // centered it correctly — same box, same padding, only the
+                // renderer differed. An absolute pixel value removes the
+                // ratio math html2canvas was getting wrong.
                 <div className="flex flex-col gap-0.5 min-w-0">
                   <span
-                    className={`block w-full text-center leading-relaxed font-body font-semibold rounded-md px-1 py-2 whitespace-nowrap text-[9px] sm:text-[14px] ${color.soft} ${color.text}`}
+                    className={`block w-full text-center leading-[16px] sm:leading-[24px] font-body font-semibold rounded-md px-1 py-2 whitespace-nowrap text-[9px] sm:text-[14px] ${color.soft} ${color.text}`}
                   >{doc.name}</span>
                   {traded && (
-                    <span className="block w-full text-center leading-relaxed font-body text-slate-400 line-through whitespace-nowrap px-1 text-[7px] sm:text-[10px]">{getDoctor(origId)?.name || '-'}</span>
+                    <span className="block w-full text-center leading-[12px] sm:leading-[17px] font-body text-slate-400 line-through whitespace-nowrap px-1 text-[7px] sm:text-[10px]">{getDoctor(origId)?.name || '-'}</span>
                   )}
                 </div>
               ) : (
                 <span className="text-[10px] font-body text-slate-300">ยังไม่กำหนด</span>
+              )}
+              {!hideUnavailableCount && unavailDoctors.length > 0 && (
+                <span className="block w-full font-body leading-[10px] sm:leading-[15px] text-slate-400 whitespace-nowrap text-[6px] sm:text-[9px]">{unavailDoctors.length} คนไม่สะดวก</span>
               )}
             </div>
           );
@@ -2628,6 +2641,7 @@ export default function App() {
                     holidaySet={holidaySet} unavailability={unavailability} marketplace={marketplace}
                     compareTo={savingScheduleImage ? null : currentSchedule} highlightDoctorId={highlightDoctorId}
                     violationDates={[...liveViolations]}
+                    hideUnavailableCount={savingScheduleImage}
                   />
                 </div>
                 {role === 'admin' && <p className="text-xs text-slate-400 mt-2 flex items-center gap-1"><Info size={12} /> แถบสีฟ้าด้านซ้ายของช่อง = วันนี้ถูกแก้ไขเฉพาะจุดด้วยมือ · ⚠️ = วันนี้ไม่ตรงเงื่อนไข (อยู่เวรวันที่แจ้งไม่สะดวก หรืออยู่เวรติดกัน) ไม่ว่าจะมาจากตอนจัดเวรหรือแก้ไขเองทีหลัง</p>}
