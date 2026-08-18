@@ -1263,47 +1263,35 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                 // replicate implicit flexbox shrink behavior.
                 //
                 // Names stay on one line and shrink to fit instead of
-                // wrapping or truncating: fontSize is clamp(min, Nvw, max),
-                // NOT a JS-measured value, deliberately — html2canvas
-                // captures a static DOM clone in an off-screen iframe sized
-                // to windowWidth, so anything computed by a React effect at
-                // the ADMIN's actual (usually much wider) screen width would
-                // be frozen into that clone unchanged, wrong for the
-                // narrower capture. vw is relative to whatever viewport is
-                // actually being rendered into — the real window normally,
-                // or html2canvas's narrower virtual one during capture — so
-                // the same rule naturally comes out ~11px on a normal desktop
-                // screen (clamped to the max, unchanged from before) and
-                // shrinks toward the ~7px floor only where cells are
-                // genuinely that narrow, without any JS involved either time.
+                // wrapping or truncating — but via a real Tailwind
+                // responsive breakpoint (text-[Npx] sm:text-[Mpx], which
+                // compiles to an actual @media rule), NOT clamp(). clamp()
+                // was tried first and silently failed inside html2canvas
+                // every single time: it kept reproducing the exact original
+                // "text cut off" bug no matter what leading/overflow was
+                // paired with it, while a plain fixed px value (no clamp)
+                // rendered perfectly — meaning html2canvas's own CSS engine
+                // (its own reimplementation, not a real browser) doesn't
+                // parse clamp() correctly. A real media query is a much
+                // older, more basic feature and is exactly what
+                // html2canvas's windowWidth option is documented to affect
+                // correctly. The base (unprefixed) size applies below
+                // Tailwind's sm breakpoint (640px) — true during the
+                // narrow mobile capture — and sm: overrides it back to the
+                // original size on any normal-width admin screen.
                 <div className="flex flex-col gap-0.5 min-w-0">
                   <span
-                    className={`block w-full text-center leading-relaxed font-body font-medium rounded px-1 py-1 whitespace-nowrap ${color.soft} ${color.text}`}
-                    style={{ fontSize: 'clamp(7px, 1.9vw, 11px)', overflowX: 'hidden', overflowY: 'visible' }}
+                    className={`block w-full text-center leading-relaxed font-body font-medium rounded px-1 py-1 whitespace-nowrap overflow-x-hidden overflow-y-visible text-[7px] sm:text-[11px] ${color.soft} ${color.text}`}
                   >{doc.name}</span>
                   {traded && (
-                    <span
-                      className="block w-full text-center leading-relaxed font-body text-slate-400 line-through whitespace-nowrap px-1"
-                      style={{ fontSize: 'clamp(6px, 1.6vw, 9px)', overflowX: 'hidden', overflowY: 'visible' }}
-                    >{getDoctor(origId)?.name || '-'}</span>
+                    <span className="block w-full text-center leading-relaxed font-body text-slate-400 line-through whitespace-nowrap overflow-x-hidden overflow-y-visible px-1 text-[6px] sm:text-[9px]">{getDoctor(origId)?.name || '-'}</span>
                   )}
                 </div>
               ) : (
                 <span className="text-[10px] font-body text-slate-300">ยังไม่กำหนด</span>
               )}
               {unavailDoctors.length > 0 && (
-                // Back to single-line shrink-to-fit (explicit preference:
-                // one line no matter how small, over wrapping). The
-                // earlier "half the text is missing" bug was vertical
-                // clipping from overflow: hidden combined with a too-tight
-                // line box for Thai vowel/tone marks — overflow-y: visible
-                // (kept here) is what actually fixes that; whatever font
-                // size the vw clamp lands on, glyphs always have the room
-                // they need above/below the line, no floor required.
-                <span
-                  className="block w-full font-body leading-relaxed text-slate-400 whitespace-nowrap"
-                  style={{ fontSize: 'clamp(4px, 1.5vw, 8px)', overflowX: 'hidden', overflowY: 'visible' }}
-                >{unavailDoctors.length} คนไม่สะดวก</span>
+                <span className="block w-full font-body leading-relaxed text-slate-400 whitespace-nowrap overflow-x-hidden overflow-y-visible text-[6px] sm:text-[9px]">{unavailDoctors.length} คนไม่สะดวก</span>
               )}
             </div>
           );
