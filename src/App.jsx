@@ -1285,17 +1285,14 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                 // enough in practice not to need a hard clip as backup.
                 <div className="flex flex-col gap-0.5 min-w-0">
                   <span
-                    className={`block w-full text-center leading-relaxed font-body font-medium rounded px-1 py-1 whitespace-nowrap text-[7px] sm:text-[11px] ${color.soft} ${color.text}`}
+                    className={`block w-full text-center leading-relaxed font-body font-semibold rounded-md px-1 py-2 whitespace-nowrap text-[9px] sm:text-[14px] ${color.soft} ${color.text}`}
                   >{doc.name}</span>
                   {traded && (
-                    <span className="block w-full text-center leading-relaxed font-body text-slate-400 line-through whitespace-nowrap px-1 text-[6px] sm:text-[9px]">{getDoctor(origId)?.name || '-'}</span>
+                    <span className="block w-full text-center leading-relaxed font-body text-slate-400 line-through whitespace-nowrap px-1 text-[7px] sm:text-[10px]">{getDoctor(origId)?.name || '-'}</span>
                   )}
                 </div>
               ) : (
                 <span className="text-[10px] font-body text-slate-300">ยังไม่กำหนด</span>
-              )}
-              {unavailDoctors.length > 0 && (
-                <span className="block w-full font-body leading-relaxed text-slate-400 whitespace-nowrap text-[6px] sm:text-[9px]">{unavailDoctors.length} คนไม่สะดวก</span>
               )}
             </div>
           );
