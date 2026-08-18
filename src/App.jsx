@@ -3,7 +3,7 @@ import * as XLSX from 'xlsx';
 import {
   Calendar as CalendarIcon, CalendarCheck, Upload, Users, Repeat, Bell, Plus, X, Check,
   ChevronLeft, ChevronRight, Settings, UserCircle, Trash2,
-  MessageCircle, Info, ArrowRightLeft, Tag, Shuffle, RotateCcw, LayoutDashboard, Download
+  MessageCircle, Info, ArrowRightLeft, Tag, Shuffle, RotateCcw, LayoutDashboard, Download, FileText
 } from 'lucide-react';
 import {
   getConfig, setConfig, getMonthData, setMonthData,
@@ -18,8 +18,33 @@ import MasterScheduleGenerator, { detectGroups, ltFor, resolveQueue, DEFAULT_WDQ
 /* ---------------------------------- constants ---------------------------------- */
 
 const THAI_MONTHS = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
+const THAI_MONTHS_SHORT = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+const THAI_WEEKDAYS_FULL = ['อาทิตย์','จันทร์','อังคาร','พุธ','พฤหัสบดี','ศุกร์','เสาร์'];
 const WEEKDAY_LABELS = ['อา','จ','อ','พ','พฤ','ศ','ส'];
 const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+// Full title + name for the official duty-roster DOCX export — the
+// doctors table only ever stores the short first name everyone in this
+// app is addressed by day to day (see every other screen), never a title
+// or surname, so this is the one place that needs the formal version.
+// Keyed by that same short name; supplied directly by the department
+// admin, not derivable from anything already in the database.
+const DOCTOR_FULL_NAME = {
+  'กนกอร': 'พญ.กนกอร จ่างจรูญโรจน์',
+  'ขนิษฐา': 'พญ.ขนิษฐา เพิ่มทวี',
+  'ชุติมา': 'พญ.ชุติมา พยุงธนทรัพย์',
+  'ณัชพล': 'นพ.ณัชพล ทวีสกุลชัย',
+  'ณัฐธิดา': 'พญ.ณัฐธิดา พฤกษ์งามพันธ์',
+  'ณัฐพล': 'นพ.ณัฐพล รุ่งโรจนานนท์',
+  'ธนวรรณ': 'พญ.ธนวรรณ ตีรณธาดา',
+  'ธัญลักษณ์': 'พญ.ธัญลักษณ์ อัศวยนต์ชัย',
+  'พสิษฐา': 'พญ.พสิษฐา เติมวรสิน',
+  'วัทนี': 'พญ.วัทนี ทวีสิทธิ์',
+  'สมิตา': 'พญ.สมิตา โลหะวิจารณ์',
+  'อารีรัตน์': 'พญ.อารีรัตน์ ชัยเรืองยศ',
+};
+const DUTY_ROSTER_HEAD_NAME = 'นางสาวอารีรัตน์ ชัยเรืองยศ';
+const DUTY_ROSTER_HEAD_TITLE = 'หัวหน้ากลุ่มงานกุมารเวชกรรม';
 
 // Chosen by actually computing perceptual (CIE Lab Delta-E) distance between
 // every pair of Tailwind's -600 hues, then greedily selecting the 12-color
@@ -127,6 +152,40 @@ function computeScheduleViolations(scheduleLike, unavailability, boundary = {}) 
     if (date === lastDate && nextId && docId === nextId) violations.add(date);
   });
   return violations;
+}
+
+// Translates this app's own schedule model (one doctor "owns" a whole
+// calendar day) into the department's real 3-shift duty roster: 00:01-
+// 08:00, 08:00-16:00, 16:00-24:00. A weekday's doctor only covers the
+// overnight block — 16:00 that day through 08:00 the next, since daytime
+// hours are covered by regular staff, not this on-call rotation, so
+// 08:00-16:00 is left blank. A holiday's doctor covers the entire day —
+// 08:00 that day through 08:00 the next — filling both the 08:00-16:00
+// and 16:00-24:00 slots. Either way, whoever a day's slot3 (16:00-24:00)
+// belongs to is the same person covering slot1 (00:01-08:00) of the day
+// immediately after, which is what carryIn threads through the loop.
+// prevDayDoctorId seeds day 1's slot1 with whoever covered the tail end
+// of the previous month (that doctor isn't otherwise visible in this
+// month's own data at all).
+function buildDutyRosterRows(year, month, effectiveSchedule, prevDayDoctorId, holidaySet) {
+  const total = daysInMonth(year, month);
+  const rows = [];
+  let carryIn = prevDayDoctorId;
+  for (let d = 1; d <= total; d++) {
+    const date = isoDate(year, month, d);
+    const docId = effectiveSchedule[date] || null;
+    const isHoliday = dayType(date, holidaySet) === 'holiday';
+    rows.push({
+      date,
+      day: d,
+      dow: new Date(year, month, d).getDay(),
+      slot1: carryIn,
+      slot2: isHoliday ? docId : null,
+      slot3: docId,
+    });
+    carryIn = docId;
+  }
+  return rows;
 }
 
 // Soft preference only — every caller uses this strictly as a tiebreak
@@ -1366,6 +1425,7 @@ export default function App() {
   // buttons above it) as an image.
   const currentScheduleCaptureRef = useRef(null);
   const [savingScheduleImage, setSavingScheduleImage] = useState(false);
+  const [exportingDocx, setExportingDocx] = useState(false);
   const saveCurrentScheduleImage = async () => {
     const el = currentScheduleCaptureRef.current;
     if (!el) return;
@@ -1414,6 +1474,107 @@ export default function App() {
       showToast('บันทึกรูปภาพไม่สำเร็จ ลองอีกครั้ง');
     } finally {
       setSavingScheduleImage(false);
+    }
+  };
+
+  // Builds the official 3-shift duty roster DOCX (see buildDutyRosterRows
+  // for the day-to-shift mapping this is built on) and downloads it.
+  const exportDutyRosterDocx = async () => {
+    setExportingDocx(true);
+    try {
+      // Lazy-loaded, same reasoning as html2canvas above — only needed for
+      // this one rare export click.
+      const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, VerticalAlign, BorderStyle } = await import('docx');
+
+      // Day 1's 00:01-08:00 slot belongs to whoever covered the tail end
+      // of the PREVIOUS month — not visible anywhere in this month's own
+      // data, so fetched fresh the same way boundary adjacency is
+      // elsewhere in this file.
+      const prevYM = month === 0 ? { y: year - 1, m: 11 } : { y: year, m: month - 1 };
+      const prevData = await getMonthData(monthKey(prevYM.y, prevYM.m));
+      const prevEff = effectiveOf(prevData);
+      const prevLastDate = isoDate(prevYM.y, prevYM.m, daysInMonth(prevYM.y, prevYM.m));
+      const prevDayDoctorId = prevEff[prevLastDate] || null;
+
+      const rows = buildDutyRosterRows(year, month, effectiveSchedule, prevDayDoctorId, holidaySet);
+
+      const nameOf = (docId) => {
+        if (!docId) return '';
+        const doc = doctors.find(d => d.id === docId);
+        if (!doc) return '';
+        return DOCTOR_FULL_NAME[doc.name] || doc.name;
+      };
+
+      const cellBorders = {
+        top: { style: BorderStyle.SINGLE, size: 4, color: '000000' },
+        bottom: { style: BorderStyle.SINGLE, size: 4, color: '000000' },
+        left: { style: BorderStyle.SINGLE, size: 4, color: '000000' },
+        right: { style: BorderStyle.SINGLE, size: 4, color: '000000' },
+      };
+      const cell = (text, { colSpan = 1, bold = false, shading = null, width } = {}) => new TableCell({
+        columnSpan: colSpan,
+        verticalAlign: VerticalAlign.CENTER,
+        borders: cellBorders,
+        width: width ? { size: width, type: WidthType.PERCENTAGE } : undefined,
+        shading: shading ? { fill: shading } : undefined,
+        children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: text || '', bold })] })],
+      });
+
+      const headerRow = new TableRow({
+        tableHeader: true,
+        children: [
+          cell('วัน เดือน ปี', { colSpan: 2, bold: true, width: 24 }),
+          cell('เวลา 00.01 น. - 08.00 น.', { bold: true, width: 25.33 }),
+          cell('เวลา 08.00 น. - 16.00 น.', { bold: true, width: 25.33 }),
+          cell('เวลา 16.00 น. - 24.00 น.', { bold: true, width: 25.34 }),
+        ],
+      });
+
+      const HOLIDAY_SHADING = 'FCE4EC';
+      const dataRows = rows.map(r => {
+        const shading = dayType(r.date, holidaySet) === 'holiday' ? HOLIDAY_SHADING : null;
+        return new TableRow({
+          children: [
+            cell(`${r.day} ${THAI_MONTHS_SHORT[month]} ${String(year + 543).slice(-2)}`, { shading, width: 12 }),
+            cell(THAI_WEEKDAYS_FULL[r.dow], { shading, width: 12 }),
+            cell(nameOf(r.slot1), { shading, width: 25.33 }),
+            cell(nameOf(r.slot2), { shading, width: 25.33 }),
+            cell(nameOf(r.slot3), { shading, width: 25.34 }),
+          ],
+        });
+      });
+
+      const table = new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...dataRows] });
+
+      const doc = new Document({
+        sections: [{
+          children: [
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              spacing: { after: 200 },
+              children: [new TextRun({ text: `เวรประจำหน้าที่กลุ่มงานกุมารเวชกรรม อยู่เวร ประจำเดือน${THAI_MONTHS[month]} ${year + 543}`, bold: true, size: 28 })],
+            }),
+            table,
+            new Paragraph({ spacing: { before: 400 }, children: [] }),
+            new Paragraph({ spacing: { before: 200 }, children: [] }),
+            new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `(${DUTY_ROSTER_HEAD_NAME})` })] }),
+            new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: DUTY_ROSTER_HEAD_TITLE })] }),
+          ],
+        }],
+      });
+
+      const blob = await Packer.toBlob(doc);
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `เวรแพทย์กลุ่มงานกุมารเวชกรรม ประจำเดือน${THAI_MONTHS[month]}${year + 543}.docx`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+      showToast('บันทึกไฟล์ DOCX เรียบร้อย');
+    } catch (err) {
+      console.error(err);
+      showToast('สร้างไฟล์ DOCX ไม่สำเร็จ ลองอีกครั้ง');
+    } finally {
+      setExportingDocx(false);
     }
   };
 
@@ -2587,6 +2748,15 @@ export default function App() {
                   className="flex items-center gap-1.5 text-sm font-medium text-teal-700 hover:bg-teal-50 disabled:opacity-50 disabled:cursor-wait px-3 py-2 rounded-lg transition-colors border border-teal-200"
                 >
                   <Download size={14} /> {savingScheduleImage ? 'กำลังบันทึก...' : 'บันทึกตารางเวร'}
+                </button>
+              )}
+              {role === 'admin' && currentScheduleGenerated && (
+                <button
+                  onClick={exportDutyRosterDocx}
+                  disabled={exportingDocx}
+                  className="flex items-center gap-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-wait px-3 py-2 rounded-lg transition-colors border border-indigo-200"
+                >
+                  <FileText size={14} /> {exportingDocx ? 'กำลังสร้างไฟล์...' : 'Export to DOCX'}
                 </button>
               )}
             </div>
