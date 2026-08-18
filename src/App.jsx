@@ -1278,13 +1278,13 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                 // genuinely that narrow, without any JS involved either time.
                 <div className="flex flex-col gap-0.5 min-w-0">
                   <span
-                    className={`block w-full text-center leading-relaxed font-body font-medium rounded px-1 py-1 whitespace-nowrap overflow-hidden ${color.soft} ${color.text}`}
-                    style={{ fontSize: 'clamp(7px, 1.9vw, 11px)' }}
+                    className={`block w-full text-center leading-relaxed font-body font-medium rounded px-1 py-1 whitespace-nowrap ${color.soft} ${color.text}`}
+                    style={{ fontSize: 'clamp(7px, 1.9vw, 11px)', overflowX: 'hidden', overflowY: 'visible' }}
                   >{doc.name}</span>
                   {traded && (
                     <span
-                      className="block w-full text-center leading-relaxed font-body text-slate-400 line-through whitespace-nowrap overflow-hidden px-1"
-                      style={{ fontSize: 'clamp(6px, 1.6vw, 9px)' }}
+                      className="block w-full text-center leading-relaxed font-body text-slate-400 line-through whitespace-nowrap px-1"
+                      style={{ fontSize: 'clamp(6px, 1.6vw, 9px)', overflowX: 'hidden', overflowY: 'visible' }}
                     >{getDoctor(origId)?.name || '-'}</span>
                   )}
                 </div>
@@ -1293,8 +1293,8 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
               )}
               {unavailDoctors.length > 0 && (
                 <span
-                  className="block w-full font-body text-slate-400 whitespace-nowrap overflow-hidden"
-                  style={{ fontSize: 'clamp(6px, 1.6vw, 9px)' }}
+                  className="block w-full font-body leading-relaxed text-slate-400 whitespace-nowrap"
+                  style={{ fontSize: 'clamp(6px, 1.6vw, 9px)', overflowX: 'hidden', overflowY: 'visible' }}
                 >{unavailDoctors.length} คนไม่สะดวก</span>
               )}
             </div>
