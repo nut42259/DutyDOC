@@ -734,8 +734,8 @@ function BatchGenerateModal({ year, month, doctors, onClose, onRun, running }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
       <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-5 font-body">
-        <h3 className="font-display font-semibold text-slate-800 text-lg mb-1">จัดตารางเวรปัจจุบันหลายเดือน</h3>
-        <p className="text-xs text-slate-400 mb-4">ระบบจะจัดทีละเดือนตามลำดับ ยกยอดจำนวนเวรที่ขาด/เกินไปชดเชยในเดือนถัดไป เพื่อให้รวมทั้งช่วงตรงกับโควตาต้นแบบล่าสุด</p>
+        <h3 className="font-display font-semibold text-slate-800 text-lg mb-1">จัดตารางเวรหลายเดือน</h3>
+        <p className="text-xs text-slate-400 mb-4">ระบบจะจัดทีละเดือนตามลำดับ ยกยอดจำนวนเวรที่ขาด/เกินไปชดเชยในเดือนถัดไป เพื่อให้รวมทั้งช่วงตรงกับโควต้าเวรล่าสุด</p>
 
         {!result ? (
           <>
@@ -760,7 +760,7 @@ function BatchGenerateModal({ year, month, doctors, onClose, onRun, running }) {
             {invalidRange ? (
               <p className="text-xs text-red-500 mb-3">ช่วงเดือนไม่ถูกต้อง (ต้องไม่เกิน 24 เดือน และ &quot;ถึงเดือน&quot; ต้องไม่ก่อน &quot;จากเดือน&quot;)</p>
             ) : (
-              <p className="text-xs text-slate-500 mb-3">รวม {monthCount} เดือน — ทุกเดือนที่มีตารางเวรปัจจุบันอยู่แล้วจะถูกจัดใหม่ทับ</p>
+              <p className="text-xs text-slate-500 mb-3">รวม {monthCount} เดือน — ทุกเดือนที่มีตารางเวรอยู่แล้วจะถูกจัดใหม่ทับ</p>
             )}
             {pendingNames && pendingNames.length > 0 && (
               <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 mb-3">
@@ -802,7 +802,7 @@ function BatchGenerateModal({ year, month, doctors, onClose, onRun, running }) {
                 })}
               </div>
             ) : (
-              <p className="text-xs text-emerald-600 mb-4">ยอดรวมทั้งช่วงตรงกับโควตาต้นแบบล่าสุดครบทุกคนแล้ว</p>
+              <p className="text-xs text-emerald-600 mb-4">ยอดรวมทั้งช่วงตรงกับโควต้าเวรล่าสุดครบทุกคนแล้ว</p>
             )}
             <div className="flex justify-end">
               <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-teal-600 hover:bg-teal-700">เสร็จสิ้น</button>
@@ -1142,9 +1142,9 @@ function OverviewTab({ year, month, doctorsWithShifts, hasMasterData, unavailabi
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <StatusCard label="ตารางเวรต้นแบบ" tone={hasMasterData ? 'emerald' : 'amber'} value={hasMasterData ? 'ตั้งค่าแล้ว' : 'ยังไม่ได้ตั้งค่า'} onClick={() => onGotoTab('master')} />
+        <StatusCard label="โควต้าเวร" tone={hasMasterData ? 'emerald' : 'amber'} value={hasMasterData ? 'ตั้งค่าแล้ว' : 'ยังไม่ได้ตั้งค่า'} onClick={() => onGotoTab('master')} />
         <StatusCard label="ยืนยันวันไม่สะดวก" tone={pendingDocs.length === 0 ? 'emerald' : 'amber'} value={`${doctorsWithShifts.length - pendingDocs.length}/${doctorsWithShifts.length} คนยืนยันแล้ว`} onClick={() => onGotoTab('unavailable')} />
-        <StatusCard label="ตารางเวรปัจจุบัน" tone={currentStatus.tone} value={currentStatus.label} onClick={() => onGotoTab('current')} />
+        <StatusCard label="ตารางเวร" tone={currentStatus.tone} value={currentStatus.label} onClick={() => onGotoTab('current')} />
       </div>
 
       {openPosts.length > 0 && (
@@ -1235,7 +1235,7 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
           const traded = !!(originalData && origId && origId !== docId);
           const titleParts = [];
           if (unavailDoctors.length) titleParts.push(`ไม่สะดวก: ${unavailDoctors.map(d => d.name).join(', ')}`);
-          if (diverged) titleParts.push(`เดิมตามตารางต้นแบบ: ${getDoctor(compareId)?.name || '-'}`);
+          if (diverged) titleParts.push(`เดิมตามโควต้าเวร: ${getDoctor(compareId)?.name || '-'}`);
           if (traded) titleParts.push(`ขาย/แลกจาก: ${getDoctor(origId)?.name || '-'}`);
 
           return (
@@ -1291,7 +1291,12 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
               ) : (
                 <span className="text-[10px] font-body text-slate-300">ยังไม่กำหนด</span>
               )}
-              {unavailDoctors.length > 0 && <span className="text-[9px] font-body text-slate-400">{unavailDoctors.length} คนไม่สะดวก</span>}
+              {unavailDoctors.length > 0 && (
+                <span
+                  className="block w-full font-body text-slate-400 whitespace-nowrap overflow-hidden"
+                  style={{ fontSize: 'clamp(6px, 1.6vw, 9px)' }}
+                >{unavailDoctors.length} คนไม่สะดวก</span>
+              )}
             </div>
           );
         })}
@@ -1330,7 +1335,7 @@ export default function App() {
   const [queueState, setQueueStateLocal] = useState(null);
   // Snapshot of the GLOBAL queue state as it was right before THIS month's
   // own last generation (see handleMasterGenConfirm) — null if this month
-  // has never been generated. Needed so re-opening "จัดตารางเวรต้นแบบ" for an
+  // has never been generated. Needed so re-opening "จัดโควต้าเวร" for an
   // already-generated month starts from the right place: the current global
   // queueState reflects wherever the LAST generation (which could be this
   // very month) left the pointers, not "right before this month ran".
@@ -1346,7 +1351,7 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
   const [pendingAdjacentAssign, setPendingAdjacentAssign] = useState(null);
-  // Wraps the current-schedule header + calendar so "บันทึกตารางเวรปัจจุบัน"
+  // Wraps the current-schedule header + calendar so "บันทึกตารางเวร"
   // can capture exactly that region (not the whole page, not the nav
   // buttons above it) as an image.
   const currentScheduleCaptureRef = useRef(null);
@@ -1354,13 +1359,12 @@ export default function App() {
   const saveCurrentScheduleImage = async () => {
     const el = currentScheduleCaptureRef.current;
     if (!el) return;
-    // savingScheduleImage also drives a couple of export-only render tweaks
-    // below (the header drops "ปัจจุบัน", the manual-edit blue-border
-    // indicator is hidden) that only make sense in a saved image, not the
-    // live admin view. Double rAF waits for React to actually commit and
-    // paint that state change before html2canvas captures the DOM — a
-    // single rAF (or none) risks the capture happening before the browser
-    // has applied it.
+    // savingScheduleImage also drives an export-only render tweak below
+    // (the manual-edit blue-border indicator is hidden) that only makes
+    // sense in a saved image, not the live admin view. Double rAF waits
+    // for React to actually commit and paint that state change before
+    // html2canvas captures the DOM — a single rAF (or none) risks the
+    // capture happening before the browser has applied it.
     setSavingScheduleImage(true);
     await new Promise(resolve => requestAnimationFrame(resolve));
     await new Promise(resolve => requestAnimationFrame(resolve));
@@ -1654,7 +1658,7 @@ export default function App() {
       setScheduleViolations([]);
       setScheduleStale(false);
       await saveMonth({ masterSchedule: nextMaster, masterOriginal: nextMasterOriginal, scheduleOverrides: {}, activeDoctorIds: nextActive, currentSchedule: {}, currentScheduleGenerated: false, scheduleStale: false });
-      showToast(`นำเข้าตารางเวรต้นแบบ ${count} วันสำเร็จ${skippedMonth ? ` (ข้าม ${skippedMonth} วันที่ไม่ตรงเดือนนี้)` : ''} — ต้องกดจัดเวรใหม่`);
+      showToast(`นำเข้าโควต้าเวร ${count} วันสำเร็จ${skippedMonth ? ` (ข้าม ${skippedMonth} วันที่ไม่ตรงเดือนนี้)` : ''} — ต้องกดจัดเวรใหม่`);
     } catch (err) {
       showToast('อ่านไฟล์ไม่สำเร็จ ตรวจสอบรูปแบบไฟล์ (คอลัมน์ A: วันที่ · B: ชื่อแพทย์)');
     }
@@ -1685,7 +1689,7 @@ export default function App() {
     if (oldEff !== newDocId) {
       const oldName = oldEff ? getDoctor(oldEff)?.name : 'ว่าง';
       const newName = newDocId ? getDoctor(newDocId)?.name : 'ว่าง';
-      addNotification(`ตารางเวรต้นแบบวันที่ ${formatDisplayDate(date)} กำหนดเป็น ${newName} (เดิม ${oldName})`, `🔔 ตารางเวรต้นแบบวันที่ ${formatDisplayDate(date)}: ${oldName} → ${newName}`);
+      addNotification(`โควต้าเวรวันที่ ${formatDisplayDate(date)} กำหนดเป็น ${newName} (เดิม ${oldName})`, `🔔 โควต้าเวรวันที่ ${formatDisplayDate(date)}: ${oldName} → ${newName}`);
     }
   };
 
@@ -1763,7 +1767,7 @@ export default function App() {
     // month ever started generating — onto this month's own record. The
     // queue pointers are shared/cumulative across all months, so both
     // clearing this month later (resetMasterSchedule) AND simply reopening
-    // "จัดตารางเวรต้นแบบ" to regenerate it again (see monthQueueSnapshot use
+    // "จัดโควต้าเวร" to regenerate it again (see monthQueueSnapshot use
     // below) need this to resume from the prior month instead of wherever
     // this month's own last run advanced the pointers to. Prefer the
     // EXISTING snapshot if this month already has one (i.e. this isn't the
@@ -1780,11 +1784,11 @@ export default function App() {
     await setQueueState(newQueueState);
     await invalidateDownstreamSnapshots(year, month);
     await addNotification(
-      `จัดตารางเวรต้นแบบ ${['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'][month]} ${year + 543} สำเร็จแล้ว`,
-      `📅 จัดตารางเวรต้นแบบ ${['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'][month]} ${year + 543} สำเร็จแล้ว`
+      `จัดโควต้าเวร ${['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'][month]} ${year + 543} สำเร็จแล้ว`,
+      `📅 จัดโควต้าเวร ${['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'][month]} ${year + 543} สำเร็จแล้ว`
     );
     setShowMasterGen(false);
-    showToast('บันทึกตารางเวรต้นแบบเรียบร้อย');
+    showToast('บันทึกโควต้าเวรเรียบร้อย');
   };
 
   const generateCurrentSchedule = async () => {
@@ -1813,7 +1817,7 @@ export default function App() {
     setScheduleStale(false);
     setScheduleOverrides({});
     await saveMonth({ currentSchedule: next, scheduleViolations: violationList, currentScheduleGenerated: true, scheduleStale: false, scheduleOverrides: {} });
-    const msg = `จัดเวรตารางเวรปัจจุบันสำหรับเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว${violationList.length ? ` (มี ${violationList.length} วันที่จัดให้ตรงเงื่อนไขไม่ได้แม้ลองสลับเวรหลายคู่แล้ว — เจ้าของเวรเดิมต้องอยู่แทน)` : ''}`;
+    const msg = `จัดเวรตารางเวรสำหรับเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว${violationList.length ? ` (มี ${violationList.length} วันที่จัดให้ตรงเงื่อนไขไม่ได้แม้ลองสลับเวรหลายคู่แล้ว — เจ้าของเวรเดิมต้องอยู่แทน)` : ''}`;
     await addNotification(msg, `🔀 ${msg}`);
     showToast('จัดเวรเรียบร้อย');
   };
@@ -1943,10 +1947,10 @@ export default function App() {
     setScheduleOverrides({});
     await saveMonth({ currentSchedule: {}, currentScheduleGenerated: false, scheduleViolations: [], scheduleStale: false, scheduleOverrides: {} });
     await addNotification(
-      `ล้างตารางเวรปัจจุบันของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว (ต้องกดจัดเวรใหม่)`,
-      `🗑️ ล้างตารางเวรปัจจุบันของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว`
+      `ล้างตารางเวรของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว (ต้องกดจัดเวรใหม่)`,
+      `🗑️ ล้างตารางเวรของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว`
     );
-    showToast('ล้างตารางเวรปัจจุบันแล้ว');
+    showToast('ล้างตารางเวรแล้ว');
   };
 
   // Wipe the master schedule (and everything derived from it — overrides,
@@ -2018,10 +2022,10 @@ export default function App() {
       }
     }
     await addNotification(
-      `ล้างตารางเวรต้นแบบของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว${queueMsg}`,
-      `🗑️ ล้างตารางเวรต้นแบบของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว${queueMsg}`
+      `ล้างโควต้าเวรของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว${queueMsg}`,
+      `🗑️ ล้างโควต้าเวรของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว${queueMsg}`
     );
-    showToast(`ล้างตารางเวรต้นแบบแล้ว${queueMsg}`);
+    showToast(`ล้างโควต้าเวรแล้ว${queueMsg}`);
   };
 
   /* ---------- unavailability ---------- */
@@ -2357,8 +2361,8 @@ export default function App() {
     const posterName = getDoctor(post.posterId)?.name;
     const takerName = getDoctor(takerId)?.name;
     const msg = post.type === 'sell'
-      ? `${takerName} รับเวรวันที่ ${formatDisplayDate(post.date)} ต่อจาก ${posterName} (ปรับตารางต้นแบบแล้ว)`
-      : `${takerName} แลกเวรกับ ${posterName}: วันที่ ${formatDisplayDate(post.date)} ↔ วันที่ ${formatDisplayDate(post.requestedDate)} (ปรับตารางเวรปัจจุบันแล้ว ต้นแบบไม่เปลี่ยน)`;
+      ? `${takerName} รับเวรวันที่ ${formatDisplayDate(post.date)} ต่อจาก ${posterName} (ปรับโควต้าเวรแล้ว)`
+      : `${takerName} แลกเวรกับ ${posterName}: วันที่ ${formatDisplayDate(post.date)} ↔ วันที่ ${formatDisplayDate(post.requestedDate)} (ปรับตารางเวรแล้ว โควต้าเวรไม่เปลี่ยน)`;
     addNotification(msg, `✅ ${msg}`);
     showToast('บันทึกเรียบร้อย');
   };
@@ -2460,16 +2464,16 @@ export default function App() {
   const tabs = role === 'admin'
     ? [
         { id: 'overview', label: 'ภาพรวม', icon: LayoutDashboard },
-        { id: 'current', label: 'ตารางเวรปัจจุบัน', icon: CalendarCheck },
-        { id: 'master', label: 'ตารางเวรต้นแบบ', icon: CalendarIcon },
+        { id: 'current', label: 'ตารางเวร', icon: CalendarCheck },
+        { id: 'master', label: 'โควต้าเวร', icon: CalendarIcon },
         { id: 'config', label: 'ตั้งค่า', icon: Settings },
         { id: 'unavailable', label: 'วันไม่สะดวก', icon: UserCircle, badge: (hasMasterData && !currentScheduleGenerated) ? pendingConfirmDocs.length : 0 },
         { id: 'marketplace', label: 'ตลาดแลกเปลี่ยน', icon: Repeat, badge: marketplace.filter(p => p.status === 'open' && (p.posterId === currentDoctorId || p.targetDoctorId === currentDoctorId)).length },
         { id: 'notifications', label: 'แจ้งเตือน', icon: Bell },
       ]
     : [
-        { id: 'current', label: 'ตารางเวรปัจจุบัน', icon: CalendarCheck },
-        { id: 'master', label: 'ตารางเวรต้นแบบ', icon: CalendarIcon },
+        { id: 'current', label: 'ตารางเวร', icon: CalendarCheck },
+        { id: 'master', label: 'โควต้าเวร', icon: CalendarIcon },
         { id: 'unavailable', label: 'แจ้งวันไม่สะดวก', icon: UserCircle, badge: (currentDoctorId && !currentScheduleGenerated && !unavailabilityConfirmed.includes(currentDoctorId)) ? 1 : 0 },
         { id: 'marketplace', label: 'ตลาดแลกเปลี่ยนเวร', icon: Repeat },
         { id: 'notifications', label: 'แจ้งเตือน', icon: Bell },
@@ -2561,7 +2565,7 @@ export default function App() {
                       onClick={() => setConfirmState({ type: 'clear-current' })}
                       className="flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-red-600 hover:bg-red-50 px-3 py-2 rounded-lg transition-colors"
                     >
-                      <RotateCcw size={14} /> ล้างตารางเวรปัจจุบัน
+                      <RotateCcw size={14} /> ล้างตารางเวร
                     </button>
                   )}
                 </div>
@@ -2572,16 +2576,16 @@ export default function App() {
                   disabled={savingScheduleImage}
                   className="flex items-center gap-1.5 text-sm font-medium text-teal-700 hover:bg-teal-50 disabled:opacity-50 disabled:cursor-wait px-3 py-2 rounded-lg transition-colors border border-teal-200"
                 >
-                  <Download size={14} /> {savingScheduleImage ? 'กำลังบันทึก...' : 'บันทึกตารางเวรปัจจุบัน'}
+                  <Download size={14} /> {savingScheduleImage ? 'กำลังบันทึก...' : 'บันทึกตารางเวร'}
                 </button>
               )}
             </div>
-            <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> ตารางนี้จะจัดก็ต่อเมื่อแอดมินกด "จัดเวร" เท่านั้น (ไม่จัดอัตโนมัติ) เพื่อให้รอโควตาต้นแบบและการแจ้งไม่สะดวกนิ่งก่อน — จำนวนเวรวันธรรมดา/วันหยุดของแต่ละคนจะเท่ากับตารางต้นแบบ และไม่มีใครอยู่เวรติดกัน{role === 'admin' ? ' คลิกวันที่เพื่อแก้ไขเฉพาะจุดเองได้หลังจัดแล้ว' : ''}</p>
+            <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> ตารางนี้จะจัดก็ต่อเมื่อแอดมินกด "จัดเวร" เท่านั้น (ไม่จัดอัตโนมัติ) เพื่อให้รอโควต้าเวรและการแจ้งไม่สะดวกนิ่งก่อน — จำนวนเวรวันธรรมดา/วันหยุดของแต่ละคนจะเท่ากับโควต้าเวร และไม่มีใครอยู่เวรติดกัน{role === 'admin' ? ' คลิกวันที่เพื่อแก้ไขเฉพาะจุดเองได้หลังจัดแล้ว' : ''}</p>
 
             {role === 'admin' && currentScheduleGenerated && scheduleStale && (
               <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 mb-4 flex items-start gap-2">
                 <Info size={14} className="mt-0.5 shrink-0" />
-                มีการเปลี่ยนแปลงข้อมูล (ตารางต้นแบบ แจ้งไม่สะดวก หรือขาย/แลกเวร) หลังจากจัดเวรครั้งล่าสุด กด "จัดเวร" อีกครั้งเพื่อให้ตารางเวรปัจจุบันตรงกับข้อมูลล่าสุด
+                มีการเปลี่ยนแปลงข้อมูล (โควต้าเวร แจ้งไม่สะดวก หรือขาย/แลกเวร) หลังจากจัดเวรครั้งล่าสุด กด "จัดเวร" อีกครั้งเพื่อให้ตารางเวรตรงกับข้อมูลล่าสุด
               </div>
             )}
 
@@ -2610,16 +2614,16 @@ export default function App() {
             {activeDoctors.length === 0 ? (
               <EmptyState icon={Users} title="ยังไม่มีแพทย์ที่อยู่เวรเดือนนี้" hint="ไปที่แท็บ 'ตั้งค่า' เพื่อเพิ่ม/เลือกแพทย์ที่อยู่เวรเดือนนี้ก่อน" />
             ) : !hasMasterData ? (
-              <EmptyState icon={CalendarIcon} title="ยังไม่มีตารางเวรต้นแบบของเดือนนี้" hint="ไปที่แท็บ 'ตารางเวรต้นแบบ' เพื่อกำหนดตารางเวรต้นแบบก่อน ตารางเวรปัจจุบันจะคำนวณจากตารางต้นแบบเท่านั้น" />
+              <EmptyState icon={CalendarIcon} title="ยังไม่มีโควต้าเวรของเดือนนี้" hint="ไปที่แท็บ 'โควต้าเวร' เพื่อกำหนดโควต้าเวรก่อน ตารางเวรจะคำนวณจากโควต้าเวรเท่านั้น" />
             ) : !currentScheduleGenerated ? (
-              <EmptyState icon={Shuffle} title="ยังไม่ได้จัดตารางเวรปัจจุบัน" hint={role === 'admin' ? 'รอให้ทุกคนแจ้งวันไม่สะดวกและยืนยันครบ (ดูสถานะด้านบน) แล้วกดปุ่ม "จัดเวร" เพื่อเริ่มจัด' : 'รอแอดมินกดจัดเวร'} />
+              <EmptyState icon={Shuffle} title="ยังไม่ได้จัดตารางเวร" hint={role === 'admin' ? 'รอให้ทุกคนแจ้งวันไม่สะดวกและยืนยันครบ (ดูสถานะด้านบน) แล้วกดปุ่ม "จัดเวร" เพื่อเริ่มจัด' : 'รอแอดมินกดจัดเวร'} />
             ) : (
               <>
                 {role === 'admin' && (
                   <DoctorHighlightPicker doctors={activeDoctors} allDoctors={doctors} selectedId={recheckDoctorId} onSelect={setRecheckDoctorId} />
                 )}
                 <div ref={currentScheduleCaptureRef} className="bg-white p-3 rounded-xl">
-                  <p className="font-display font-semibold text-slate-800 text-base mb-2 text-center">{savingScheduleImage ? 'ตารางเวร' : 'ตารางเวรปัจจุบัน'} — {THAI_MONTHS[month]} {year + 543}</p>
+                  <p className="font-display font-semibold text-slate-800 text-base mb-2 text-center">ตารางเวร — {THAI_MONTHS[month]} {year + 543}</p>
                   <CalendarGrid
                     year={year} month={month} scheduleData={effectiveSchedule}
                     editable={role === 'admin'} onAssign={manualAssignCurrent}
@@ -2654,7 +2658,7 @@ export default function App() {
                   ) : null;
                 })()}
 
-                <UsageTable title="จำนวนเวรที่จัดแล้วเดือนนี้ (จัดจริง / โควตาต้นแบบล่าสุด)" doctors={activeDoctors} usage={currentUsage} original={masterUsage} />
+                <UsageTable title="จำนวนเวรที่จัดแล้วเดือนนี้ (จัดจริง / โควต้าเวรล่าสุด)" doctors={activeDoctors} usage={currentUsage} original={masterUsage} />
               </>
             )}
           </div>
@@ -2669,7 +2673,7 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <button onClick={() => setShowMasterGen(true)}
                     className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-3 py-1.5 rounded-lg transition-colors">
-                    <CalendarCheck size={14} /> จัดตารางเวรต้นแบบ
+                    <CalendarCheck size={14} /> จัดโควต้าเวร
                   </button>
                   <label className="flex items-center gap-1.5 border border-dashed border-slate-300 rounded-lg px-3 py-1.5 cursor-pointer hover:border-teal-400 transition-colors text-sm font-medium text-slate-600">
                     <Upload size={14} className="text-teal-600" /> อัปโหลด .xlsx
@@ -2680,13 +2684,13 @@ export default function App() {
                       onClick={() => setConfirmState({ type: 'clear-master' })}
                       className="flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg transition-colors"
                     >
-                      <RotateCcw size={14} /> ล้างตารางเวรต้นแบบ
+                      <RotateCcw size={14} /> ล้างโควต้าเวร
                     </button>
                   )}
                 </div>
               )}
             </div>
-            <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> นี่คือตารางเวรต้นแบบที่คุณกำหนดเอง (ไฟล์ Excel: คอลัมน์ A วันที่ · B ชื่อแพทย์) การขาย/แลกเวรที่สำเร็จแล้วจะถูกปรับเข้าที่นี่โดยอัตโนมัติเพื่ออัปเดตโควตาล่าสุด{role === 'admin' ? ' — คลิกวันที่เพื่อแก้ไขได้โดยตรง' : ''}</p>
+            <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> นี่คือโควต้าเวรที่คุณกำหนดเอง (ไฟล์ Excel: คอลัมน์ A วันที่ · B ชื่อแพทย์) การขาย/แลกเวรที่สำเร็จแล้วจะถูกปรับเข้าที่นี่โดยอัตโนมัติเพื่ออัปเดตโควตาล่าสุด{role === 'admin' ? ' — คลิกวันที่เพื่อแก้ไขได้โดยตรง' : ''}</p>
 
             {activeDoctors.length === 0 ? (
               <EmptyState icon={Users} title="ยังไม่มีแพทย์ที่อยู่เวรเดือนนี้" hint="ไปที่แท็บ 'ตั้งค่า' เพื่อเพิ่ม/เลือกแพทย์ที่อยู่เวรเดือนนี้ก่อน" />
@@ -2721,7 +2725,7 @@ export default function App() {
                 <button onClick={addManualDoctor} className="flex items-center gap-1 text-xs font-medium text-teal-700 hover:bg-teal-50 px-2 py-1 rounded-lg"><Plus size={14} /> เพิ่มแพทย์</button>
               </div>
               {doctors.length === 0 ? (
-                <EmptyState icon={Users} title="ยังไม่มีรายชื่อแพทย์" hint="เพิ่มเองด้านบน หรืออัปโหลดตารางเวรต้นแบบซึ่งจะเพิ่มรายชื่อให้อัตโนมัติ" />
+                <EmptyState icon={Users} title="ยังไม่มีรายชื่อแพทย์" hint="เพิ่มเองด้านบน หรืออัปโหลดโควต้าเวรซึ่งจะเพิ่มรายชื่อให้อัตโนมัติ" />
               ) : (
                 <div className="flex flex-wrap gap-2">
                   {doctors.map((d, i) => {
@@ -2773,7 +2777,7 @@ export default function App() {
             </div>
 
             <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
-              <p className="text-sm text-slate-600 flex items-start gap-2"><Info size={14} className="mt-0.5 shrink-0" /> ระยะห่างระหว่างเวรเป็นกฎตายตัวแล้ว: ห้ามอยู่เวรวันติดกันเสมอในตารางเวรปัจจุบัน ไม่ต้องตั้งค่าเพิ่ม</p>
+              <p className="text-sm text-slate-600 flex items-start gap-2"><Info size={14} className="mt-0.5 shrink-0" /> ระยะห่างระหว่างเวรเป็นกฎตายตัวแล้ว: ห้ามอยู่เวรวันติดกันเสมอในตารางเวร ไม่ต้องตั้งค่าเพิ่ม</p>
             </div>
           </div>
         )}
@@ -2782,20 +2786,20 @@ export default function App() {
         {activeTab === 'unavailable' && role === 'doctor' && (
           <div>
             {!currentDoctorId ? <EmptyState icon={UserCircle} title="ยังไม่มีแพทย์ในระบบ" /> : (hasMasterData && myMasterShiftCount === 0) ? (
-              <EmptyState icon={UserCircle} title="คุณไม่มีเวรในเดือนนี้" hint={`${getDoctor(currentDoctorId)?.name} ไม่มีเวรอยู่ในตารางเวรต้นแบบของเดือน ${THAI_MONTHS[month]} ${year + 543} จึงไม่ต้องแจ้งวันไม่สะดวก`} />
+              <EmptyState icon={UserCircle} title="คุณไม่มีเวรในเดือนนี้" hint={`${getDoctor(currentDoctorId)?.name} ไม่มีเวรอยู่ในโควต้าเวรของเดือน ${THAI_MONTHS[month]} ${year + 543} จึงไม่ต้องแจ้งวันไม่สะดวก`} />
             ) : (
               <>
                 {currentScheduleGenerated ? (
                   <div className="bg-slate-100 border border-slate-200 text-slate-600 text-xs rounded-lg px-3 py-2 mb-4 flex items-start gap-2">
                     <Info size={14} className="mt-0.5 shrink-0" />
-                    แอดมินจัดตารางเวรปัจจุบันของเดือนนี้แล้ว จึงล็อกไม่ให้แจ้ง/แก้ไขวันไม่สะดวกเพิ่มเติม — ถ้าวันที่คุณอยู่เวรดันไม่สะดวกขึ้นมา ให้ลงขาย/แลกเวรที่แท็บ "ตลาดแลกเปลี่ยนเวร" แทน
+                    แอดมินจัดตารางเวรของเดือนนี้แล้ว จึงล็อกไม่ให้แจ้ง/แก้ไขวันไม่สะดวกเพิ่มเติม — ถ้าวันที่คุณอยู่เวรดันไม่สะดวกขึ้นมา ให้ลงขาย/แลกเวรที่แท็บ "ตลาดแลกเปลี่ยนเวร" แทน
                   </div>
                 ) : (
                   <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 mb-4 flex items-start gap-2">
                     <Info size={14} className="mt-0.5 shrink-0" />
                     {hasMasterData
-                      ? 'แจ้งวันไม่สะดวกล่วงหน้าได้เลย แล้วกดยืนยันด้านล่างเมื่อแจ้งครบ แอดมินจะรอให้ทุกคนยืนยันก่อนกดจัดเวร เพื่อให้จำนวนเวรวันธรรมดา/วันหยุดของทุกคนตรงกับตารางต้นแบบ และไม่มีใครอยู่เวรติดกัน — เมื่อแอดมินกดจัดเวร (ตารางเวรปัจจุบัน) แล้ว จะล็อกไม่ให้แก้ไขเพิ่มอีก'
-                      : 'ยังไม่มีตารางเวรต้นแบบของเดือนนี้ — แจ้งวันไม่สะดวกล่วงหน้าได้เลย แล้วกดยืนยันด้านล่างเมื่อแจ้งครบ — จะล็อกไม่ให้แก้ไขเพิ่มเมื่อแอดมินกดจัดเวร (ตารางเวรปัจจุบัน) เท่านั้น ไม่ใช่ตอนตั้งตารางต้นแบบ'}
+                      ? 'แจ้งวันไม่สะดวกล่วงหน้าได้เลย แล้วกดยืนยันด้านล่างเมื่อแจ้งครบ แอดมินจะรอให้ทุกคนยืนยันก่อนกดจัดเวร เพื่อให้จำนวนเวรวันธรรมดา/วันหยุดของทุกคนตรงกับโควต้าเวร และไม่มีใครอยู่เวรติดกัน — เมื่อแอดมินกดจัดเวรแล้ว จะล็อกไม่ให้แก้ไขเพิ่มอีก'
+                      : 'ยังไม่มีโควต้าเวรของเดือนนี้ — แจ้งวันไม่สะดวกล่วงหน้าได้เลย แล้วกดยืนยันด้านล่างเมื่อแจ้งครบ — จะล็อกไม่ให้แก้ไขเพิ่มเมื่อแอดมินกดจัดเวรเท่านั้น ไม่ใช่ตอนตั้งโควต้าเวร'}
                   </div>
                 )}
                 <RecurringUnavailablePanel
@@ -2937,7 +2941,7 @@ export default function App() {
       <ConfirmModal
         open={confirmState?.type === 'rearrange'}
         title="จัดเวร?"
-        body={`ระบบจะจัดตารางเวรปัจจุบันทั้งเดือนจากตารางต้นแบบล่าสุด (จำนวนเวรวันธรรมดา/วันหยุดของแต่ละคนเท่ากับต้นแบบ และรับประกันว่าไม่มีใครอยู่เวรติดกัน) การแก้ไขเฉพาะจุดที่เคยทำไว้ในตารางเวรปัจจุบันเดือน ${THAI_MONTHS[month]} ${year + 543} จะถูกล้างไปด้วย — การขาย/แลกเวรที่สำเร็จแล้วจะไม่ถูกยกเลิก เพราะถูกบันทึกลงตารางต้นแบบไปแล้ว${confirmState?.pendingCount > 0 ? `\n\n⚠️ ยังมี ${confirmState.pendingCount} คนที่ยังไม่ยืนยันว่าแจ้งวันไม่สะดวกครบ ต้องการจัดเวรเลยหรือรอก่อน?` : ''}`}
+        body={`ระบบจะจัดตารางเวรทั้งเดือนจากโควต้าเวรล่าสุด (จำนวนเวรวันธรรมดา/วันหยุดของแต่ละคนเท่ากับโควต้าเวร และรับประกันว่าไม่มีใครอยู่เวรติดกัน) การแก้ไขเฉพาะจุดที่เคยทำไว้ในตารางเวรเดือน ${THAI_MONTHS[month]} ${year + 543} จะถูกล้างไปด้วย — การขาย/แลกเวรที่สำเร็จแล้วจะไม่ถูกยกเลิก เพราะถูกบันทึกลงโควต้าเวรไปแล้ว${confirmState?.pendingCount > 0 ? `\n\n⚠️ ยังมี ${confirmState.pendingCount} คนที่ยังไม่ยืนยันว่าแจ้งวันไม่สะดวกครบ ต้องการจัดเวรเลยหรือรอก่อน?` : ''}`}
         confirmLabel={confirmState?.pendingCount > 0 ? 'จัดเวรเลย' : 'จัดเวร'}
         danger={confirmState?.pendingCount > 0}
         onCancel={() => setConfirmState(null)}
@@ -2956,8 +2960,8 @@ export default function App() {
 
       <ConfirmModal
         open={confirmState?.type === 'clear-current'}
-        title="ล้างตารางเวรปัจจุบัน?"
-        body={`ตารางเวรปัจจุบันของเดือน ${THAI_MONTHS[month]} ${year + 543} จะกลับไปเป็นค่าเริ่มต้น (ไม่ปรากฏตาราง) จนกว่าจะกดจัดเวรใหม่ การแก้ไขเฉพาะจุดที่เคยทำไว้จะหายไปด้วย — การขาย/แลกเวรที่สำเร็จแล้วจะไม่ถูกยกเลิก เพราะถูกบันทึกลงตารางต้นแบบไปแล้ว`}
+        title="ล้างตารางเวร?"
+        body={`ตารางเวรของเดือน ${THAI_MONTHS[month]} ${year + 543} จะกลับไปเป็นค่าเริ่มต้น (ไม่ปรากฏตาราง) จนกว่าจะกดจัดเวรใหม่ การแก้ไขเฉพาะจุดที่เคยทำไว้จะหายไปด้วย — การขาย/แลกเวรที่สำเร็จแล้วจะไม่ถูกยกเลิก เพราะถูกบันทึกลงโควต้าเวรไปแล้ว`}
         confirmLabel="ล้างตาราง"
         danger
         onCancel={() => setConfirmState(null)}
@@ -2966,8 +2970,8 @@ export default function App() {
 
       <ConfirmModal
         open={confirmState?.type === 'clear-master'}
-        title="ล้างตารางเวรต้นแบบ?"
-        body={`ตารางเวรต้นแบบทั้งหมดของเดือน ${THAI_MONTHS[month]} ${year + 543} จะถูกล้าง (รวมถึงตารางเวรปัจจุบันที่คำนวณจากมันด้วย) รายชื่อแพทย์และวันไม่สะดวกที่แจ้งไว้จะไม่หายไป — ใช้เมื่อต้องการเริ่มจัดตารางต้นแบบใหม่ทั้งหมดสำหรับเดือนนี้`}
+        title="ล้างโควต้าเวร?"
+        body={`โควต้าเวรทั้งหมดของเดือน ${THAI_MONTHS[month]} ${year + 543} จะถูกล้าง (รวมถึงตารางเวรที่คำนวณจากมันด้วย) รายชื่อแพทย์และวันไม่สะดวกที่แจ้งไว้จะไม่หายไป — ใช้เมื่อต้องการเริ่มจัดโควต้าเวรใหม่ทั้งหมดสำหรับเดือนนี้`}
         confirmLabel="ล้างตาราง"
         danger
         onCancel={() => setConfirmState(null)}
@@ -3002,7 +3006,7 @@ export default function App() {
               const res = await generateCurrentScheduleBatch(sy, sm, ey, em);
               const totalViolations = res.perMonth.reduce((s, r) => s + r.violations, 0);
               const debtCount = Object.keys(res.finalDebt).length;
-              const msg = `จัดตารางเวรปัจจุบันหลายเดือนสำเร็จ (${res.monthsList.length} เดือน)${totalViolations ? ` มี ${totalViolations} วันจัดให้ตรงเงื่อนไขไม่ได้` : ''}${debtCount ? ` — ยังมี ${debtCount} คนชดเชยไม่ครบภายในช่วงนี้` : ''}`;
+              const msg = `จัดตารางเวรหลายเดือนสำเร็จ (${res.monthsList.length} เดือน)${totalViolations ? ` มี ${totalViolations} วันจัดให้ตรงเงื่อนไขไม่ได้` : ''}${debtCount ? ` — ยังมี ${debtCount} คนชดเชยไม่ครบภายในช่วงนี้` : ''}`;
               await addNotification(msg, `🔀 ${msg}`);
               return res;
             } finally {
@@ -3240,7 +3244,7 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
       {!currentScheduleGenerated && (
         <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 flex items-start gap-2">
           <Info size={14} className="mt-0.5 shrink-0" />
-          ยังไม่ได้จัดตารางเวรปัจจุบันของเดือนนี้ วันที่แสดงด้านล่างจึงอิงจากตารางเวรต้นแบบไปก่อน หลังแอดมินกดจัดเวรแล้ว วันที่จะเปลี่ยนเป็นวันที่อยู่เวรจริง
+          ยังไม่ได้จัดตารางเวรของเดือนนี้ วันที่แสดงด้านล่างจึงอิงจากโควต้าเวรไปก่อน หลังแอดมินกดจัดเวรแล้ว วันที่จะเปลี่ยนเป็นวันที่อยู่เวรจริง
         </div>
       )}
 
@@ -3320,7 +3324,7 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
 
       <div className="border border-indigo-200 rounded-2xl p-4 bg-indigo-50/30">
         <div className="flex items-center gap-2 mb-3"><ArrowRightLeft size={16} className="text-indigo-600" /><p className="font-display font-semibold text-slate-800">แลกเวร</p></div>
-        <p className="text-xs text-slate-400 mb-3">แลกได้เฉพาะวันธรรมดากับวันธรรมดา หรือวันหยุดกับวันหยุด — เลือกวันของฉันก่อน แล้วเลือกวันที่ต้องการแลกมาได้จากเดือนเดียวกันหรือเดือนอื่นในอนาคตก็ได้ (ถ้าเดือนนั้นยังไม่ได้จัดเวรปัจจุบัน จะอิงจากตารางเวรต้นแบบไปก่อน)</p>
+        <p className="text-xs text-slate-400 mb-3">แลกได้เฉพาะวันธรรมดากับวันธรรมดา หรือวันหยุดกับวันหยุด — เลือกวันของฉันก่อน แล้วเลือกวันที่ต้องการแลกมาได้จากเดือนเดียวกันหรือเดือนอื่นในอนาคตก็ได้ (ถ้าเดือนนั้นยังไม่ได้จัดตารางเวร จะอิงจากโควต้าเวรไปก่อน)</p>
 
         {(role === 'doctor' || role === 'admin') && (
           myDates.length === 0 ? (
@@ -3358,7 +3362,7 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
                   <span className="text-xs text-red-500">ไม่มีวันประเภทเดียวกันในเดือนนี้ที่แลกได้โดยไม่ทำให้ใครติดกัน — ลองเปลี่ยนเดือนดู</span>
                 ) : (
                   <div className="w-full mt-1">
-                    <p className="text-xs text-slate-500 mb-2">3. เลือกวันที่ต้องการแลกมา (เฉพาะ{dayType(swapDate, holidaySet) === 'holiday' ? 'วันหยุด' : 'วันธรรมดา'}){!targetScheduleGenerated ? ' — เดือนนี้ยังไม่ได้จัดตารางเวรปัจจุบัน อิงจากตารางเวรต้นแบบ' : ''}</p>
+                    <p className="text-xs text-slate-500 mb-2">3. เลือกวันที่ต้องการแลกมา (เฉพาะ{dayType(swapDate, holidaySet) === 'holiday' ? 'วันหยุด' : 'วันธรรมดา'}){!targetScheduleGenerated ? ' — เดือนนี้ยังไม่ได้จัดตารางเวร อิงจากโควต้าเวร' : ''}</p>
                     <SwapCalendar
                       year={swapTargetYM.year} month={swapTargetYM.month}
                       candidateDates={candidateSwapDates}
@@ -3444,8 +3448,8 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
         body={acceptTarget ? (() => {
           const actorLabel = actingAsSomeoneElse ? getDoctor(effectiveDoctorId)?.name : 'คุณ';
           return acceptTarget.type === 'sell'
-            ? `${actorLabel}จะรับเวรวันที่ ${formatDisplayDate(acceptTarget.date)} แทน ${getDoctor(acceptTarget.posterId)?.name} — ตารางเวรต้นแบบและโควตาจะอัปเดตทันที`
-            : `${actorLabel}จะมอบเวรวันที่ ${formatDisplayDate(acceptTarget.requestedDate)} ให้ ${getDoctor(acceptTarget.posterId)?.name} และรับเวรวันที่ ${formatDisplayDate(acceptTarget.date)} มาแทน — ตารางเวรปัจจุบันจะอัปเดตทันที (ตารางต้นแบบและโควตาไม่เปลี่ยน)`;
+            ? `${actorLabel}จะรับเวรวันที่ ${formatDisplayDate(acceptTarget.date)} แทน ${getDoctor(acceptTarget.posterId)?.name} — โควต้าเวรจะอัปเดตทันที`
+            : `${actorLabel}จะมอบเวรวันที่ ${formatDisplayDate(acceptTarget.requestedDate)} ให้ ${getDoctor(acceptTarget.posterId)?.name} และรับเวรวันที่ ${formatDisplayDate(acceptTarget.date)} มาแทน — ตารางเวรจะอัปเดตทันที (โควต้าเวรไม่เปลี่ยน)`;
         })() : ''}
         confirmLabel="ยืนยัน"
         onCancel={() => setAcceptTarget(null)}
@@ -3462,8 +3466,8 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
             return `จะยกเลิกประกาศ${reverseTarget.type === 'sell' ? 'ขายเวร' : 'แลกเวร'}วันที่ ${formatDisplayDate(reverseTarget.date)} ของ ${posterName}`;
           }
           return reverseTarget.type === 'sell'
-            ? `รายการนี้สำเร็จไปแล้ว: ${takerName} รับเวรวันที่ ${formatDisplayDate(reverseTarget.date)} ต่อจาก ${posterName} — การยกเลิกจะคืนเวรวันนี้ให้ ${posterName} ในตารางเวรต้นแบบทันที (โปรดแจ้งทั้งสองฝ่ายให้ทราบด้วย)`
-            : `รายการนี้สำเร็จไปแล้ว: ${posterName} แลกกับ ${takerName} วันที่ ${formatDisplayDate(reverseTarget.date)} ↔ ${formatDisplayDate(reverseTarget.requestedDate)} — การยกเลิกจะคืนตารางเวรปัจจุบันของทั้งสองวันกลับเป็นเดิมทันที (โปรดแจ้งทั้งสองฝ่ายให้ทราบด้วย)`;
+            ? `รายการนี้สำเร็จไปแล้ว: ${takerName} รับเวรวันที่ ${formatDisplayDate(reverseTarget.date)} ต่อจาก ${posterName} — การยกเลิกจะคืนเวรวันนี้ให้ ${posterName} ในโควต้าเวรทันที (โปรดแจ้งทั้งสองฝ่ายให้ทราบด้วย)`
+            : `รายการนี้สำเร็จไปแล้ว: ${posterName} แลกกับ ${takerName} วันที่ ${formatDisplayDate(reverseTarget.date)} ↔ ${formatDisplayDate(reverseTarget.requestedDate)} — การยกเลิกจะคืนตารางเวรของทั้งสองวันกลับเป็นเดิมทันที (โปรดแจ้งทั้งสองฝ่ายให้ทราบด้วย)`;
         })() : ''}
         confirmLabel="ยกเลิก/คืนตาราง"
         danger
@@ -3474,7 +3478,7 @@ function MarketplaceTab({ role, currentDoctorId, doctors, getDoctor, marketplace
       <ConfirmModal
         open={buyAllConfirm}
         title="ซื้อทุกเวรที่เปิดอยู่?"
-        body={`คุณจะรับเวรทั้งหมด ${buyableSellPosts.length} วันที่เปิดขายอยู่ (ทุกเดือน): ${buyableSellPosts.map(p => formatDisplayDate(p.date)).join(', ')} — ตารางเวรต้นแบบและโควตาจะอัปเดตทันทีสำหรับทุกวัน`}
+        body={`คุณจะรับเวรทั้งหมด ${buyableSellPosts.length} วันที่เปิดขายอยู่ (ทุกเดือน): ${buyableSellPosts.map(p => formatDisplayDate(p.date)).join(', ')} — โควต้าเวรจะอัปเดตทันทีสำหรับทุกวัน`}
         confirmLabel={buyingAll ? 'กำลังซื้อ…' : 'ซื้อทั้งหมด'}
         onCancel={() => setBuyAllConfirm(false)}
         onConfirm={async () => {
@@ -3657,7 +3661,7 @@ function AdminUnavailablePanel({ year, month, doctors, allDoctors, unavailabilit
                     className={`rounded-lg border p-2 min-h-[56px] text-left transition-colors
                       ${recurring ? 'bg-indigo-50 border-indigo-300' : marked ? 'bg-red-50 border-red-300' : type === 'holiday' ? 'bg-rose-100 border-rose-200 hover:border-teal-300' : 'bg-white border-slate-200 hover:border-teal-300'}`}>
                     <div className="font-mono text-[11px] text-slate-500">{Number(date.slice(-2))}</div>
-                    {inMaster && <div className="text-[9px] text-sky-600 font-medium">ต้นแบบ</div>}
+                    {inMaster && <div className="text-[9px] text-sky-600 font-medium">โควต้าเวร</div>}
                     {onDuty && <div className="text-[9px] text-teal-600 font-medium">อยู่เวร</div>}
                     {marked && <div className={`text-[10px] font-medium ${recurring ? 'text-indigo-500' : 'text-red-500'}`}>{recurring ? 'ไม่สะดวกประจำ' : 'ไม่สะดวก'}</div>}
                   </button>

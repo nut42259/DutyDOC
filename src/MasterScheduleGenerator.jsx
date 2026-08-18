@@ -407,7 +407,7 @@ export default function MasterScheduleGenerator({ year, month, doctors, activeDo
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
           <div>
-            <p className="font-display font-semibold text-slate-800">จัดตารางเวรต้นแบบ</p>
+            <p className="font-display font-semibold text-slate-800">จัดโควต้าเวร</p>
             <p className="text-xs text-slate-400">{monthLabel}</p>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1 rounded-lg hover:bg-slate-100 transition-colors">
@@ -596,7 +596,7 @@ export default function MasterScheduleGenerator({ year, month, doctors, activeDo
 
               <button onClick={handleGenerate}
                 className="w-full py-2.5 bg-teal-600 hover:bg-teal-700 text-white text-sm font-medium rounded-lg transition-colors">
-                จัดตารางเวรต้นแบบ →
+                จัดโควต้าเวร →
               </button>
             </>
           )}
@@ -667,7 +667,7 @@ export default function MasterScheduleGenerator({ year, month, doctors, activeDo
                 </button>
                 <button onClick={handleConfirm}
                   className="flex-2 flex-grow-[2] py-2 text-sm bg-teal-600 hover:bg-teal-700 text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-1.5">
-                  <Check size={14} /> ยืนยันและบันทึกตารางต้นแบบ
+                  <Check size={14} /> ยืนยันและบันทึกโควต้าเวร
                 </button>
               </div>
             </>
