@@ -1260,16 +1260,20 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                 // content" sizing, and w-full+block makes each name span's
                 // width an explicit fact rather than something derived from
                 // flex layout — needed because html2canvas doesn't reliably
-                // replicate implicit flexbox shrink/truncate behavior, so a
-                // long name would render past the cell's edge in an exported
-                // image even though it looks fine (truncated) in the browser.
+                // replicate implicit flexbox shrink behavior. Names wrap
+                // instead of truncating (break-words, no whitespace-nowrap)
+                // so a long name always shows in full — the cell's only
+                // min-h-[64px], not a fixed height, so it grows to fit
+                // wrapped text instead of clipping it. This matters most for
+                // the saved schedule image, captured at a narrow mobile
+                // width where cells are much narrower than on the admin's
+                // own desktop screen.
                 <div className="flex flex-col gap-0.5 min-w-0">
                   {/* leading-relaxed + py-1 (not py-0.5) give Thai descenders
-                      (ฐ, ญ, ...) enough vertical room inside the clipped
-                      (overflow-hidden, for truncate) box — too tight a line
-                      box was cutting their tails off at the bottom edge. */}
-                  <span className={`block w-full text-center text-[11px] leading-relaxed font-body font-medium rounded px-1 py-1 truncate ${color.soft} ${color.text}`}>{doc.name}</span>
-                  {traded && <span className="block w-full text-center text-[9px] leading-relaxed font-body text-slate-400 line-through truncate px-1">{getDoctor(origId)?.name || '-'}</span>}
+                      (ฐ, ญ, ...) enough vertical room; also keeps wrapped
+                      lines from crowding each other. */}
+                  <span className={`block w-full text-center text-[11px] leading-relaxed font-body font-medium rounded px-1 py-1 break-words ${color.soft} ${color.text}`}>{doc.name}</span>
+                  {traded && <span className="block w-full text-center text-[9px] leading-relaxed font-body text-slate-400 line-through break-words px-1">{getDoctor(origId)?.name || '-'}</span>}
                 </div>
               ) : (
                 <span className="text-[10px] font-body text-slate-300">ยังไม่กำหนด</span>
