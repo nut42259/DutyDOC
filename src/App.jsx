@@ -1260,20 +1260,33 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                 // content" sizing, and w-full+block makes each name span's
                 // width an explicit fact rather than something derived from
                 // flex layout — needed because html2canvas doesn't reliably
-                // replicate implicit flexbox shrink behavior. Names wrap
-                // instead of truncating (break-words, no whitespace-nowrap)
-                // so a long name always shows in full — the cell's only
-                // min-h-[64px], not a fixed height, so it grows to fit
-                // wrapped text instead of clipping it. This matters most for
-                // the saved schedule image, captured at a narrow mobile
-                // width where cells are much narrower than on the admin's
-                // own desktop screen.
+                // replicate implicit flexbox shrink behavior.
+                //
+                // Names stay on one line and shrink to fit instead of
+                // wrapping or truncating: fontSize is clamp(min, Nvw, max),
+                // NOT a JS-measured value, deliberately — html2canvas
+                // captures a static DOM clone in an off-screen iframe sized
+                // to windowWidth, so anything computed by a React effect at
+                // the ADMIN's actual (usually much wider) screen width would
+                // be frozen into that clone unchanged, wrong for the
+                // narrower capture. vw is relative to whatever viewport is
+                // actually being rendered into — the real window normally,
+                // or html2canvas's narrower virtual one during capture — so
+                // the same rule naturally comes out ~11px on a normal desktop
+                // screen (clamped to the max, unchanged from before) and
+                // shrinks toward the ~7px floor only where cells are
+                // genuinely that narrow, without any JS involved either time.
                 <div className="flex flex-col gap-0.5 min-w-0">
-                  {/* leading-relaxed + py-1 (not py-0.5) give Thai descenders
-                      (ฐ, ญ, ...) enough vertical room; also keeps wrapped
-                      lines from crowding each other. */}
-                  <span className={`block w-full text-center text-[11px] leading-relaxed font-body font-medium rounded px-1 py-1 break-words ${color.soft} ${color.text}`}>{doc.name}</span>
-                  {traded && <span className="block w-full text-center text-[9px] leading-relaxed font-body text-slate-400 line-through break-words px-1">{getDoctor(origId)?.name || '-'}</span>}
+                  <span
+                    className={`block w-full text-center leading-relaxed font-body font-medium rounded px-1 py-1 whitespace-nowrap overflow-hidden ${color.soft} ${color.text}`}
+                    style={{ fontSize: 'clamp(7px, 1.9vw, 11px)' }}
+                  >{doc.name}</span>
+                  {traded && (
+                    <span
+                      className="block w-full text-center leading-relaxed font-body text-slate-400 line-through whitespace-nowrap overflow-hidden px-1"
+                      style={{ fontSize: 'clamp(6px, 1.6vw, 9px)' }}
+                    >{getDoctor(origId)?.name || '-'}</span>
+                  )}
                 </div>
               ) : (
                 <span className="text-[10px] font-body text-slate-300">ยังไม่กำหนด</span>
