@@ -1292,10 +1292,15 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                 <span className="text-[10px] font-body text-slate-300">ยังไม่กำหนด</span>
               )}
               {unavailDoctors.length > 0 && (
-                <span
-                  className="block w-full font-body leading-relaxed text-slate-400 whitespace-nowrap"
-                  style={{ fontSize: 'clamp(6px, 1.6vw, 9px)', overflowX: 'hidden', overflowY: 'visible' }}
-                >{unavailDoctors.length} คนไม่สะดวก</span>
+                // Fixed size, wraps if it must — unlike the doctor's name,
+                // this is secondary information, so it's not worth chasing
+                // a single-line shrink-to-fit down to a font size small
+                // enough that Thai vowel/tone marks stop rendering
+                // legibly (that's what was actually happening at the
+                // clamp()'s ~6px floor, not a CSS overflow clip — this
+                // codebase already ran into "too tight a box" cutting Thai
+                // glyphs off once before at a bigger size than that).
+                <span className="block w-full font-body leading-relaxed text-slate-400 text-[8px]">{unavailDoctors.length} คนไม่สะดวก</span>
               )}
             </div>
           );
