@@ -2220,9 +2220,20 @@ export default function App() {
   // the master afterward (see buildCurrentSchedule), which is what keeps
   // everyone's weekday/holiday totals matching the new quota AND guarantees
   // nobody ends up with adjacent duty days — so no validation is needed here.
-  // A completed trade implies the giver is unavailable on the date(s) they
-  // gave away (that's practically why they sold/swapped it), and the new
-  // owner obviously must be treated as available there.
+  //
+  // A sell is a QUOTA transfer only — the master schedule tracks how many
+  // shifts of each type a doctor owes this month, not which exact date they
+  // actually work (buildCurrentSchedule decides that later, around each
+  // doctor's own declared availability). So a sell never touches either
+  // side's unavailability: the buyer may well have declared themselves
+  // unavailable for that specific date already (still true after buying —
+  // buying it doesn't mean committing to work that exact day), and the
+  // seller isn't newly unavailable for it either (nothing stops them
+  // legitimately landing on it later as part of their own reduced quota).
+  // A swap is different — it directly exchanges two specific CURRENT-
+  // schedule dates (see the 'swap' branch below), a real commitment to work
+  // (or not work) those exact days, so marking both sides' availability
+  // there is correct.
   //
   // Always reads each affected month FRESH from Supabase right before
   // writing, rather than trusting local React state — this app has no
@@ -2293,19 +2304,21 @@ export default function App() {
         });
       }
     } else {
-      // SELL: permanent quota transfer — must update master so the next
-      // "จัดเวร" reflects the new ownership, and mark the seller unavailable
-      // on that date (they gave it away for a reason).
+      // SELL: a master-schedule ownership change ONLY — this is a quota
+      // transaction, not a real-world commitment. The master schedule
+      // decides how many shifts of each type a doctor owes this month, not
+      // which exact date they'll actually work; that's decided later, when
+      // "จัดเวร" builds the current schedule around each doctor's own
+      // declared availability. So this never touches either party's
+      // unavailability: buying a date doesn't mean the buyer is now
+      // available to work that exact date (they may well have declared
+      // themselves unavailable for it specifically — that stays true), and
+      // selling one doesn't make the seller newly unavailable for it either
+      // (nothing stops them legitimately landing on it anyway as part of
+      // their own remaining quota).
       await patchMonth(dateMonthKey, (raw) => {
         const nextMaster = { ...(raw.masterSchedule || raw.schedule || {}), [post.date]: takerId };
-        const nextUnavail = {};
-        Object.keys(raw.unavailability || {}).forEach(id => { nextUnavail[id] = [...(raw.unavailability[id] || [])]; });
-        const list = nextUnavail[post.posterId] || [];
-        if (!list.includes(post.date)) nextUnavail[post.posterId] = [...list, post.date].sort();
-        const takerList = nextUnavail[takerId] || [];
-        nextUnavail[takerId] = takerList.filter(d => d !== post.date);
-        const nextConfirmed = (raw.unavailabilityConfirmed || []).filter(id => id !== post.posterId && id !== takerId);
-        return { masterSchedule: nextMaster, unavailability: nextUnavail, unavailabilityConfirmed: nextConfirmed, scheduleStale: nextStaleFor(raw) };
+        return { masterSchedule: nextMaster, scheduleStale: nextStaleFor(raw) };
       });
     }
 
@@ -2350,12 +2363,14 @@ export default function App() {
 
     const dateMonthKey = monthKey(Number(post.date.slice(0, 4)), Number(post.date.slice(5, 7)) - 1);
     if (post.type === 'sell') {
+      // Mirrors acceptPost's SELL branch: only the master-schedule
+      // ownership changed, so only that needs reverting. Neither side's
+      // unavailability was touched by the sale, so there's nothing to undo
+      // there either — doing so would risk stripping a declaration either
+      // doctor made for an unrelated reason, before or after the sale.
       await patchMonth(dateMonthKey, (raw) => {
         const nextMaster = { ...(raw.masterSchedule || raw.schedule || {}), [post.date]: post.posterId };
-        const nextUnavail = {};
-        Object.keys(raw.unavailability || {}).forEach(id => { nextUnavail[id] = [...(raw.unavailability[id] || [])]; });
-        if (nextUnavail[post.posterId]) nextUnavail[post.posterId] = nextUnavail[post.posterId].filter(d => d !== post.date);
-        return { masterSchedule: nextMaster, unavailability: nextUnavail, scheduleStale: nextStaleFor(raw) };
+        return { masterSchedule: nextMaster, scheduleStale: nextStaleFor(raw) };
       });
     } else {
       const reqMonthKey = monthKey(Number(post.requestedDate.slice(0, 4)), Number(post.requestedDate.slice(5, 7)) - 1);
