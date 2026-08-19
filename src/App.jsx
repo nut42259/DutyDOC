@@ -1484,23 +1484,29 @@ export default function App() {
     try {
       // Lazy-loaded, same reasoning as html2canvas above — only needed for
       // this one rare export click.
-      const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, VerticalAlign, BorderStyle, TabStopType } = await import('docx');
+      const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, VerticalAlign, BorderStyle } = await import('docx');
 
       const DOC_FONT = 'TH SarabunPSK';
       const TABLE_SIZE = 28; // 14pt — docx sizes are in half-points
       const BODY_SIZE = 32;  // 16pt
-      // Where the surname column starts within a name cell, so "นพ.ณัชพล"
-      // and "พญ.ธัญลักษณ์" (different lengths) both land their surname at
-      // the same horizontal position — matches the original paper roster's
-      // tab-aligned layout rather than left-packing name+surname together.
-      // Tight enough that the longest head + tab + surname still fits one
-      // line at TABLE_SIZE within a name column's own share of the (now
-      // narrower date columns') width — see DATE_COL_WIDTH below.
-      const SURNAME_TAB_TWIPS = 600;
-      const DATE_COL_WIDTH = 7; // was 12 — narrower date/day-name columns
-      // free up width for the three name columns without changing the
-      // date column PAIR's overall 1:1 ratio to each other.
-      const NAME_COL_WIDTH = (100 - DATE_COL_WIDTH * 2) / 3;
+      const PAGE_MARGIN_LR = 300;
+      const PAGE_MARGIN_TB = 500;
+      const CELL_MARGIN = 60;
+      // Must fit "30 พ.ย. 69" (measured ~1440 twips) plus cell margins.
+      const DATE_COL_WIDTH = 10;
+      // Each name slot is TWO real table columns (head, surname), not one
+      // column with a paragraph tab stop — a tab stop's position didn't
+      // reliably separate the two in this library even with a proper Tab()
+      // element and a verified-correct XML tab-stop definition (tried and
+      // still failed), so this switches to something that can't have that
+      // failure mode: an actual grid column boundary, which every Word-
+      // compatible renderer aligns consistently across rows by construction.
+      // Widths aren't tuned evenly — surnames run longer than the
+      // title+first-name heads in this roster (measured), so the split
+      // reflects that instead of a plain 50/50.
+      const NAME_SLOT_WIDTH = (100 - DATE_COL_WIDTH * 2) / 3;
+      const HEAD_COL_WIDTH = NAME_SLOT_WIDTH * 0.42;
+      const SURNAME_COL_WIDTH = NAME_SLOT_WIDTH * 0.58;
 
       // Day 1's 00:01-08:00 slot belongs to whoever covered the tail end
       // of the PREVIOUS month — not visible anywhere in this month's own
@@ -1542,31 +1548,49 @@ export default function App() {
         shading: shading ? { fill: shading } : undefined,
         children: [new Paragraph({ alignment: align, children: [run(text || '', { bold })] })],
       });
-      // A name cell is its own paragraph (not plain cell()) so the surname
-      // can sit on a tab stop instead of being centered as one string.
-      const nameCell = (name, { shading = null, width } = {}) => new TableCell({
-        verticalAlign: VerticalAlign.CENTER,
-        borders: cellBorders,
-        width: width ? { size: width, type: WidthType.PERCENTAGE } : undefined,
-        shading: shading ? { fill: shading } : undefined,
-        children: [
-          name
-            ? new Paragraph({
-                alignment: AlignmentType.LEFT,
-                tabStops: [{ type: TabStopType.LEFT, position: SURNAME_TAB_TWIPS }],
-                children: [run(name.head), run('\t'), run(name.surname)],
-              })
-            : new Paragraph({ children: [] }),
-        ],
-      });
+      // Head and surname are two separate real TableCells (own left-
+      // aligned paragraph each), not one cell with a paragraph tab stop —
+      // a fixed table-grid column boundary aligns identically across every
+      // row by construction, the same way the date/day-name columns
+      // already do, instead of depending on a tab stop actually landing
+      // where it's told to (which didn't hold up in this library even with
+      // a verified-correct tab-stop definition and a real Tab() element).
+      // The shared internal edge (head's right / surname's left) is left
+      // borderless so the pair still reads as one visual cell.
+      const headBorders = { ...cellBorders, right: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' } };
+      const surnameBorders = { ...cellBorders, left: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' } };
+      const headSurnameCells = (name, { shading = null } = {}) => {
+        if (!name) {
+          return [
+            new TableCell({ verticalAlign: VerticalAlign.CENTER, borders: headBorders, width: { size: HEAD_COL_WIDTH, type: WidthType.PERCENTAGE }, shading: shading ? { fill: shading } : undefined, children: [new Paragraph({ children: [] })] }),
+            new TableCell({ verticalAlign: VerticalAlign.CENTER, borders: surnameBorders, width: { size: SURNAME_COL_WIDTH, type: WidthType.PERCENTAGE }, shading: shading ? { fill: shading } : undefined, children: [new Paragraph({ children: [] })] }),
+          ];
+        }
+        return [
+          new TableCell({
+            verticalAlign: VerticalAlign.CENTER,
+            borders: headBorders,
+            width: { size: HEAD_COL_WIDTH, type: WidthType.PERCENTAGE },
+            shading: shading ? { fill: shading } : undefined,
+            children: [new Paragraph({ alignment: AlignmentType.LEFT, children: [run(name.head)] })],
+          }),
+          new TableCell({
+            verticalAlign: VerticalAlign.CENTER,
+            borders: surnameBorders,
+            width: { size: SURNAME_COL_WIDTH, type: WidthType.PERCENTAGE },
+            shading: shading ? { fill: shading } : undefined,
+            children: [new Paragraph({ alignment: AlignmentType.LEFT, children: [run(name.surname)] })],
+          }),
+        ];
+      };
 
       const headerRow = new TableRow({
         tableHeader: true,
         children: [
           cell('วัน เดือน ปี', { colSpan: 2, bold: true, width: DATE_COL_WIDTH * 2 }),
-          cell('เวลา 00.01 น. - 08.00 น.', { bold: true, width: NAME_COL_WIDTH }),
-          cell('เวลา 08.00 น. - 16.00 น.', { bold: true, width: NAME_COL_WIDTH }),
-          cell('เวลา 16.00 น. - 24.00 น.', { bold: true, width: NAME_COL_WIDTH }),
+          cell('เวลา 00.01 น. - 08.00 น.', { colSpan: 2, bold: true, width: NAME_SLOT_WIDTH }),
+          cell('เวลา 08.00 น. - 16.00 น.', { colSpan: 2, bold: true, width: NAME_SLOT_WIDTH }),
+          cell('เวลา 16.00 น. - 24.00 น.', { colSpan: 2, bold: true, width: NAME_SLOT_WIDTH }),
         ],
       });
 
@@ -1577,9 +1601,9 @@ export default function App() {
           children: [
             cell(`${r.day} ${THAI_MONTHS_SHORT[month]} ${String(year + 543).slice(-2)}`, { shading, width: DATE_COL_WIDTH }),
             cell(THAI_WEEKDAYS_FULL[r.dow], { shading, width: DATE_COL_WIDTH }),
-            nameCell(nameOf(r.slot1), { shading, width: NAME_COL_WIDTH }),
-            nameCell(nameOf(r.slot2), { shading, width: NAME_COL_WIDTH }),
-            nameCell(nameOf(r.slot3), { shading, width: NAME_COL_WIDTH }),
+            ...headSurnameCells(nameOf(r.slot1), { shading }),
+            ...headSurnameCells(nameOf(r.slot2), { shading }),
+            ...headSurnameCells(nameOf(r.slot3), { shading }),
           ],
         });
       });
@@ -1587,11 +1611,25 @@ export default function App() {
       // 100% table width is relative to the page's own content area, so
       // shrinking the left/right margins (below) is what actually makes
       // the table run nearly edge to edge — the percentage alone doesn't.
-      const table = new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...dataRows] });
+      // Explicit (tight) cell margins, not the library's default ~115
+      // twips each side, since every twip matters for the name columns'
+      // one-line fit (see the width math above).
+      const table = new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        margins: { top: CELL_MARGIN, bottom: CELL_MARGIN, left: CELL_MARGIN, right: CELL_MARGIN },
+        rows: [headerRow, ...dataRows],
+      });
 
       const doc = new Document({
         sections: [{
-          properties: { page: { margin: { top: 720, bottom: 720, left: 500, right: 500 } } },
+          // Portrait (the library's default — not overriding orientation)
+          // per explicit preference, even though the width math below
+          // shows it's genuinely tight for the longest names.
+          properties: {
+            page: {
+              margin: { top: PAGE_MARGIN_TB, bottom: PAGE_MARGIN_TB, left: PAGE_MARGIN_LR, right: PAGE_MARGIN_LR },
+            },
+          },
           children: [
             new Paragraph({
               alignment: AlignmentType.CENTER,
