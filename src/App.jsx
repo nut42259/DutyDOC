@@ -13,7 +13,7 @@ import {
   getQueueState, setQueueState,
 } from './storage';
 import LoginScreen from './LoginScreen';
-import MasterScheduleGenerator, { detectGroups, ltFor, resolveQueue, DEFAULT_WDQ_NAMES, DEFAULT_H12Q_NAMES, DEFAULT_H3Q_NAMES } from './MasterScheduleGenerator';
+import MasterScheduleGenerator, { detectGroups, ltFor, resolveQueue, lastNextInLoop, DEFAULT_WDQ_NAMES, DEFAULT_H12Q_NAMES, DEFAULT_H3Q_NAMES } from './MasterScheduleGenerator';
 
 /* ---------------------------------- constants ---------------------------------- */
 
@@ -1031,7 +1031,7 @@ function classifyMonthDates(y, m, isHolidayDate) {
   return datesByType;
 }
 
-function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }) {
+function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays, queueState }) {
   const holidaySetAll = new Set(holidays);
   // Answers for ANY date, not just this month's — needed so a holiday
   // streak crossing a month boundary (e.g. 31 Dec – 3 Jan) is classified as
@@ -1043,6 +1043,27 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
   };
 
   const datesByType = classifyMonthDates(year, month, isHolidayDate);
+
+  // Live queue pointer (same source MasterScheduleGenerator itself uses) —
+  // tells us who's actually up next right now, independent of whether the
+  // viewed month has been generated yet.
+  const WDQ = resolveQueue(queueState?.WDQ ?? DEFAULT_WDQ_NAMES, doctors);
+  const H12Q = resolveQueue(queueState?.H12Q ?? DEFAULT_H12Q_NAMES, doctors);
+  const H3Q = resolveQueue(queueState?.H3Q ?? DEFAULT_H3Q_NAMES, doctors);
+  const queueByType = { weekday: WDQ, h12: H12Q, h3: H3Q, h4: H3Q, h5: H3Q };
+
+  // First real calendar date (from startYear/startMonth onward, searching
+  // forward as needed since h3/h4/h5 don't occur every month) that the
+  // live "next" pointer would actually land on.
+  const findNextDate = (startYear, startMonth, key) => {
+    let y = startYear, m = startMonth;
+    for (let i = 0; i < 24; i++) {
+      const dates = classifyMonthDates(y, m, isHolidayDate)[key];
+      if (dates.length > 0) return [...dates].sort()[0];
+      m += 1; if (m > 11) { m = 0; y += 1; }
+    }
+    return null;
+  };
   const thisMonth = {};
   ['weekday', 'h12', 'h3', 'h4', 'h5'].forEach(key => {
     const datesThisMonth = datesByType[key].filter(d => masterOriginal[d]).sort();
@@ -1129,6 +1150,19 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
         {['weekday', 'h12', 'h3', 'h4', 'h5'].map((key, idx) => {
           const tm = thisMonth[key];
           const lr = lastReal ? lastReal[key] : undefined; // undefined = still loading
+
+          // Next up per the live queue pointer — lands in the viewed month
+          // if it hasn't been generated yet, otherwise search forward from
+          // next month (h3/h4/h5 don't occur every month).
+          const info = lastReal !== null ? lastNextInLoop(queueByType[key], queueState[key]) : null;
+          let nextLabel = null, nextDate = null;
+          if (info) {
+            const nextName = doctors.find(d => d.id === info.nextId)?.name ?? '?';
+            nextLabel = info.nextHasDup ? `${nextName}${info.nextOcc}` : nextName;
+            const searchStart = tm ? (month === 11 ? { y: year + 1, m: 0 } : { y: year, m: month + 1 }) : { y: year, m: month };
+            nextDate = findNextDate(searchStart.y, searchStart.m, key);
+          }
+
           return (
             <div key={key} className={idx > 0 ? 'pt-3 mt-3 border-t border-slate-100' : ''}>
               <p className="text-[11px] font-medium text-slate-700 mb-1.5">{idx + 1}. เวร{QUEUE_LOOP_LABELS[key]}</p>
@@ -1147,6 +1181,12 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
                     <Box label="เดือนนี้เริ่มที่" name={tm.firstDoc} date={tm.firstDate} />
                     <span className="text-slate-300 text-sm mb-2">→</span>
                     <Box label="เดือนนี้จบที่" name={tm.lastDoc} date={tm.lastDate} />
+                  </>
+                )}
+                {nextLabel && (
+                  <>
+                    <span className="text-slate-300 text-sm mb-2">→</span>
+                    <Box label="เดือนต่อไปเริ่มที่" name={nextLabel} date={nextDate} />
                   </>
                 )}
               </div>
@@ -2972,7 +3012,7 @@ export default function App() {
                 <p className="text-xs text-slate-400 mt-3 flex items-center gap-1"><Info size={12} /> ชื่อสีเทาขีดฆ่า = เจ้าของเวรเดิมก่อนขายเวร (ไม่ปรากฏสำหรับการแลกเวร) · ชื่อด้านบน = เจ้าของเวรปัจจุบัน</p>
                 <UsageTable title="จำนวนเวรที่จัดแล้วเดือนนี้ (ปัจจุบัน(เดิมก่อนขายเวร))" doctors={activeDoctors} usage={masterUsage} original={masterOriginalUsage} />
                 {hasMasterData && queueState && (
-                  <QueueRunOrderSummary year={year} month={month} doctors={doctors} masterOriginal={masterOriginal} holidays={holidays} />
+                  <QueueRunOrderSummary year={year} month={month} doctors={doctors} masterOriginal={masterOriginal} holidays={holidays} queueState={queueState} />
                 )}
               </>
             )}
