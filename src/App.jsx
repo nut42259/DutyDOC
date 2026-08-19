@@ -1026,20 +1026,55 @@ function occurrenceLabelAt(key, idx) {
   return `${name}${occ}`;
 }
 
-// Which array index a real name corresponds to — disambiguating duplicate
-// names (h12 only) using whichever real neighbor (chronologically adjacent,
-// same loop) is known. Returns null if the name isn't in the loop at all, or
-// if it's a duplicate and no given neighbor matches either candidate slot.
-function resolveLoopIndex(key, name, { prevName, nextName } = {}) {
+// Disambiguating duplicate names (h12 only) by exact-neighbor matching
+// breaks when the neighbor is ITSELF a duplicate name (ขนิษฐา follows both
+// ณัฐธิดา slots, so "next is ขนิษฐา" matches either one) — verified against
+// 5 real cases where it silently picked the wrong occurrence. The queue
+// pointer only ever moves FORWARD through the fixed array (skipping slots
+// sometimes, per the eligibility system, but never going backward), so the
+// correct disambiguator is: whichever candidate slot is the SMALLEST
+// forward step from a known reference position in the same direction.
+function candidatesFor(key, name) {
   const arr = LOOP_BASE_ORDER[key];
-  const candidates = [];
-  arr.forEach((n, i) => { if (n === name) candidates.push(i); });
-  if (candidates.length <= 1) return candidates[0] ?? null;
-  for (const i of candidates) {
-    if (prevName != null && arr[(i - 1 + arr.length) % arr.length] === prevName) return i;
-    if (nextName != null && arr[(i + 1) % arr.length] === nextName) return i;
+  const list = [];
+  arr.forEach((n, i) => { if (n === name) list.push(i); });
+  return list;
+}
+function nearestForward(key, name, afterIdx) {
+  const candidates = candidatesFor(key, name);
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+  if (afterIdx == null) return null;
+  const len = LOOP_BASE_ORDER[key].length;
+  let best = null, bestDist = Infinity;
+  for (const c of candidates) {
+    const dist = (c - afterIdx + len) % len;
+    if (dist > 0 && dist < bestDist) { bestDist = dist; best = c; }
   }
-  return null;
+  return best;
+}
+function nearestBackward(key, name, beforeIdx) {
+  const candidates = candidatesFor(key, name);
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+  if (beforeIdx == null) return null;
+  const len = LOOP_BASE_ORDER[key].length;
+  let best = null, bestDist = Infinity;
+  for (const c of candidates) {
+    const dist = (beforeIdx - c + len) % len;
+    if (dist > 0 && dist < bestDist) { bestDist = dist; best = c; }
+  }
+  return best;
+}
+// Resolves a whole chronological run of real names (same loop type) to
+// array indices in one pass: forward using each entry's resolved
+// predecessor, then a backward fill (using each entry's resolved successor)
+// for any leading duplicate that had no predecessor context yet.
+function resolveChain(key, names) {
+  const resolved = new Array(names.length).fill(null);
+  for (let i = 0; i < names.length; i++) resolved[i] = nearestForward(key, names[i], i > 0 ? resolved[i - 1] : null);
+  for (let i = names.length - 2; i >= 0; i--) if (resolved[i] == null) resolved[i] = nearestBackward(key, names[i], resolved[i + 1]);
+  return resolved;
 }
 
 // Generated from LOOP_BASE_ORDER so the displayed reference text can never
@@ -1213,16 +1248,19 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
           const lr = lastReal ? (lastReal[key] || KNOWN_LOOP_HISTORY[key] || null) : undefined; // undefined = still loading
           const loaded = lastReal !== null && nextMonthMaster !== undefined;
 
-          // Resolve every real name's exact array index — disambiguating
-          // h12's duplicate names (ณัชพล/ณัฐพล/ณัฐธิดา/ขนิษฐา) via whichever
-          // real chronological neighbor is known — so every box below shows
-          // the correct 1/2 suffix instead of guessing at the first match.
+          // Resolve every real name's exact array index by walking the whole
+          // chronological chain (lr → this month's dates in order) as one
+          // sequence — disambiguating h12's duplicate names
+          // (ณัชพล/ณัฐพล/ณัฐธิดา/ขนิษฐา) via forward distance from the
+          // previous resolved slot, not just a single adjacent-name match
+          // (which breaks when that neighbor is itself a duplicate name).
           const tmNames = tm ? tm.names : null;
-          const d1Idx = tm ? resolveLoopIndex(key, tmNames[0], { prevName: lr?.name, nextName: tmNames[1] }) : null;
-          const dnIdx = tm
-            ? (tmNames.length === 1 ? d1Idx : resolveLoopIndex(key, tmNames[tmNames.length - 1], { prevName: tmNames[tmNames.length - 2] }))
-            : null;
-          const lrIdx = lr ? resolveLoopIndex(key, lr.name, { nextName: tmNames ? tmNames[0] : undefined }) : null;
+          const chainNames = [...(lr ? [lr.name] : []), ...(tmNames || [])];
+          const chainIdx = resolveChain(key, chainNames);
+          const off = lr ? 1 : 0;
+          const lrIdx = lr ? chainIdx[0] : null;
+          const d1Idx = tm ? chainIdx[off] : null;
+          const dnIdx = tm ? chainIdx[off + tmNames.length - 1] : null;
           const label = (rawName, resolvedIdx) => (resolvedIdx != null ? occurrenceLabelAt(key, resolvedIdx) : rawName);
 
           const lrLabel = lr ? label(lr.name, lrIdx) : null;
@@ -1236,10 +1274,9 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
           // historical scan to finish before deciding.
           const lastShownName = tm ? tmNames[tmNames.length - 1] : (lr ? lr.name : null);
           const lastShownIdx = tm ? dnIdx : lrIdx;
-          const bestEffortIdx = lastShownIdx != null ? lastShownIdx : (lastShownName ? LOOP_BASE_ORDER[key].indexOf(lastShownName) : -1);
           const real = loaded ? nextMonthReal[key] : null;
-          const nextRealIdx = real ? resolveLoopIndex(key, real.name, { prevName: lastShownName }) : null;
-          const fallbackNextIdx = (loaded && !real && bestEffortIdx !== -1) ? (bestEffortIdx + 1) % LOOP_BASE_ORDER[key].length : null;
+          const nextRealIdx = real ? nearestForward(key, real.name, lastShownIdx) : null;
+          const fallbackNextIdx = (loaded && !real && lastShownIdx != null) ? (lastShownIdx + 1) % LOOP_BASE_ORDER[key].length : null;
           const nextLabel = real ? label(real.name, nextRealIdx) : (fallbackNextIdx != null ? occurrenceLabelAt(key, fallbackNextIdx) : null);
           const nextDate = real ? real.date : (fallbackNextIdx != null ? firstDateNextMonth(key) : null);
 
