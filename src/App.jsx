@@ -13,7 +13,7 @@ import {
   getQueueState, setQueueState,
 } from './storage';
 import LoginScreen from './LoginScreen';
-import MasterScheduleGenerator, { detectGroups, ltFor, resolveQueue, lastNextInLoop, DEFAULT_WDQ_NAMES, DEFAULT_H12Q_NAMES, DEFAULT_H3Q_NAMES } from './MasterScheduleGenerator';
+import MasterScheduleGenerator, { detectGroups, ltFor, resolveQueue, DEFAULT_WDQ_NAMES, DEFAULT_H12Q_NAMES, DEFAULT_H3Q_NAMES } from './MasterScheduleGenerator';
 
 /* ---------------------------------- constants ---------------------------------- */
 
@@ -1031,7 +1031,7 @@ function classifyMonthDates(y, m, isHolidayDate) {
   return datesByType;
 }
 
-function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays, queueState }) {
+function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }) {
   const holidaySetAll = new Set(holidays);
   // Answers for ANY date, not just this month's — needed so a holiday
   // streak crossing a month boundary (e.g. 31 Dec – 3 Jan) is classified as
@@ -1044,26 +1044,60 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays, 
 
   const datesByType = classifyMonthDates(year, month, isHolidayDate);
 
-  // Live queue pointer (same source MasterScheduleGenerator itself uses) —
-  // tells us who's actually up next right now, independent of whether the
-  // viewed month has been generated yet.
-  const WDQ = resolveQueue(queueState?.WDQ ?? DEFAULT_WDQ_NAMES, doctors);
-  const H12Q = resolveQueue(queueState?.H12Q ?? DEFAULT_H12Q_NAMES, doctors);
-  const H3Q = resolveQueue(queueState?.H3Q ?? DEFAULT_H3Q_NAMES, doctors);
-  const queueByType = { weekday: WDQ, h12: H12Q, h3: H3Q, h4: H3Q, h5: H3Q };
-
-  // First real calendar date (from startYear/startMonth onward, searching
-  // forward as needed since h3/h4/h5 don't occur every month) that the
-  // live "next" pointer would actually land on.
-  const findNextDate = (startYear, startMonth, key) => {
-    let y = startYear, m = startMonth;
-    for (let i = 0; i < 24; i++) {
-      const dates = classifyMonthDates(y, m, isHolidayDate)[key];
-      if (dates.length > 0) return [...dates].sort()[0];
-      m += 1; if (m > 11) { m = 0; y += 1; }
-    }
-    return null;
+  // "เดือนต่อไปเริ่มที่" is purely about the fixed rotation shown in
+  // QUEUE_RUN_ORDER_TEXT (the "how the queue runs" reference), NOT about any
+  // real generated schedule — so it's always literally the calendar month
+  // right after the one being VIEWED, regardless of whether that next month
+  // (or even the viewed month itself) has actually had its quota set yet.
+  const nextCalMonth = month === 11 ? { y: year + 1, m: 0 } : { y: year, m: month + 1 };
+  const nextMonthDatesByType = classifyMonthDates(nextCalMonth.y, nextCalMonth.m, isHolidayDate);
+  const firstDateNextMonth = (key) => {
+    const dates = nextMonthDatesByType[key];
+    return dates.length > 0 ? [...dates].sort()[0] : null;
   };
+  // Occurrence-safe "next name after lastName" lookup within the SAME fixed
+  // text sequence already shown above (so it can never drift from what's
+  // displayed) — duplicate names (only h12 has any) get a 1/2 suffix, same
+  // convention used in the master-schedule generator. Used only as a
+  // fallback when next month's real quota hasn't been set yet.
+  const nextInRunOrder = (key, lastName) => {
+    const arr = QUEUE_RUN_ORDER_TEXT[key].split(' → ').map(s => s.trim());
+    const lastIdx = arr.indexOf(lastName);
+    if (lastIdx === -1) return null;
+    const nextIdx = (lastIdx + 1) % arr.length;
+    const nextName = arr[nextIdx];
+    const isDup = arr.filter(x => x === nextName).length > 1;
+    const occ = isDup ? arr.slice(0, nextIdx + 1).filter(x => x === nextName).length : null;
+    return occ ? `${nextName}${occ}` : nextName;
+  };
+
+  // Next month's REAL quota, if it's already been set — takes priority over
+  // the theoretical rotation fallback above, the same way "เดือนนี้จบที่"
+  // reflects real data rather than theory whenever real data exists.
+  const [nextMonthMaster, setNextMonthMaster] = useState(undefined); // undefined = loading, null = no data
+  useEffect(() => {
+    let cancelled = false;
+    setNextMonthMaster(undefined);
+    getMonthData(monthKey(nextCalMonth.y, nextCalMonth.m)).then(data => {
+      if (cancelled) return;
+      setNextMonthMaster(data ? (data.masterOriginal || data.masterSchedule || data.schedule || {}) : null);
+    });
+    return () => { cancelled = true; };
+  }, [nextCalMonth.y, nextCalMonth.m]);
+
+  const nextMonthReal = {};
+  if (nextMonthMaster) {
+    ['weekday', 'h12', 'h3', 'h4', 'h5'].forEach(key => {
+      const datesNextMonth = nextMonthDatesByType[key].filter(d => nextMonthMaster[d]).sort();
+      if (datesNextMonth.length > 0) {
+        nextMonthReal[key] = {
+          date: datesNextMonth[0],
+          name: doctors.find(d => d.id === nextMonthMaster[datesNextMonth[0]])?.name ?? '?',
+        };
+      }
+    });
+  }
+
   const thisMonth = {};
   ['weekday', 'h12', 'h3', 'h4', 'h5'].forEach(key => {
     const datesThisMonth = datesByType[key].filter(d => masterOriginal[d]).sort();
@@ -1151,17 +1185,17 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays, 
           const tm = thisMonth[key];
           const lr = lastReal ? lastReal[key] : undefined; // undefined = still loading
 
-          // Next up per the live queue pointer — lands in the viewed month
-          // if it hasn't been generated yet, otherwise search forward from
-          // next month (h3/h4/h5 don't occur every month).
-          const info = lastReal !== null ? lastNextInLoop(queueByType[key], queueState[key]) : null;
-          let nextLabel = null, nextDate = null;
-          if (info) {
-            const nextName = doctors.find(d => d.id === info.nextId)?.name ?? '?';
-            nextLabel = info.nextHasDup ? `${nextName}${info.nextOcc}` : nextName;
-            const searchStart = tm ? (month === 11 ? { y: year + 1, m: 0 } : { y: year, m: month + 1 }) : { y: year, m: month };
-            nextDate = findNextDate(searchStart.y, searchStart.m, key);
-          }
+          // "เดือนต่อไปเริ่มที่" — real next-month quota if it's already been
+          // set, otherwise the theoretical rotation fallback computed from
+          // whichever name is currently shown last ("เดือนนี้จบที่" if set,
+          // else "ล่าสุดจบที่"). Waits for both the next-month fetch and the
+          // historical scan to finish before deciding.
+          const loaded = lastReal !== null && nextMonthMaster !== undefined;
+          const real = loaded ? nextMonthReal[key] : null;
+          const lastShownName = tm ? tm.lastDoc : (lr ? lr.name : null);
+          const fallbackLabel = loaded && !real && lastShownName ? nextInRunOrder(key, lastShownName) : null;
+          const nextLabel = real ? real.name : fallbackLabel;
+          const nextDate = real ? real.date : (fallbackLabel ? firstDateNextMonth(key) : null);
 
           return (
             <div key={key} className={idx > 0 ? 'pt-3 mt-3 border-t border-slate-100' : ''}>
@@ -3012,7 +3046,7 @@ export default function App() {
                 <p className="text-xs text-slate-400 mt-3 flex items-center gap-1"><Info size={12} /> ชื่อสีเทาขีดฆ่า = เจ้าของเวรเดิมก่อนขายเวร (ไม่ปรากฏสำหรับการแลกเวร) · ชื่อด้านบน = เจ้าของเวรปัจจุบัน</p>
                 <UsageTable title="จำนวนเวรที่จัดแล้วเดือนนี้ (ปัจจุบัน(เดิมก่อนขายเวร))" doctors={activeDoctors} usage={masterUsage} original={masterOriginalUsage} />
                 {hasMasterData && queueState && (
-                  <QueueRunOrderSummary year={year} month={month} doctors={doctors} masterOriginal={masterOriginal} holidays={holidays} queueState={queueState} />
+                  <QueueRunOrderSummary year={year} month={month} doctors={doctors} masterOriginal={masterOriginal} holidays={holidays} />
                 )}
               </>
             )}
