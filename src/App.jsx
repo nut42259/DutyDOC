@@ -1000,18 +1000,53 @@ function UsageTable({ title, doctors, usage, original }) {
 
 const QUEUE_LOOP_LABELS = { weekday: 'วันธรรมดา', h12: 'วันหยุด 1-2 วัน', h3: 'วันหยุด 3 วัน', h4: 'วันหยุด 4 วัน', h5: 'วันหยุด 5 วัน' };
 
-// Static reference sequence per loop (not derived from live queue state) —
-// the fixed rotation order the program is supposed to follow, independent
-// of wherever the pointer currently sits. h3/h4/h5 all draw from the same
-// underlying array (H3Q) so they share identical text here, but each still
-// gets its own "เริ่มที่/จบที่" below since each has its own pointer.
-const QUEUE_RUN_ORDER_TEXT = {
-  weekday: 'อารีรัตน์ → ชุติมา → กนกอร → ธัญลักษณ์ → วัทนี → ธนวรรณ → ณัชพล → สมิตา → พสิษฐา → ณัฐธิดา → ขนิษฐา → ณัฐพล',
-  h12: 'ชุติมา → ณัชพล → ณัฐพล → กนกอร → ธัญลักษณ์ → ณัฐธิดา → ขนิษฐา → ธนวรรณ → ณัชพล → ณัฐพล → วัทนี → สมิตา → ณัฐธิดา → ขนิษฐา → พสิษฐา',
-  h3: 'ชุติมา → กนกอร → ธัญลักษณ์ → วัทนี → ธนวรรณ → ณัชพล → สมิตา → พสิษฐา → ณัฐธิดา → ขนิษฐา → ณัฐพล',
-  h4: 'ชุติมา → กนกอร → ธัญลักษณ์ → วัทนี → ธนวรรณ → ณัชพล → สมิตา → พสิษฐา → ณัฐธิดา → ขนิษฐา → ณัฐพล',
-  h5: 'ชุติมา → กนกอร → ธัญลักษณ์ → วัทนี → ธนวรรณ → ณัชพล → สมิตา → พสิษฐา → ณัฐธิดา → ขนิษฐา → ณัฐพล',
+// Fixed rotation order per loop (not derived from live queue state) — the
+// order the program is supposed to follow, independent of wherever the
+// pointer currently sits. h3/h4/h5 all draw from the same underlying array
+// (H3Q) so they share identical order here, but each still gets its own
+// "เริ่มที่/จบที่" below since each has its own pointer. Only h12 has any
+// name appearing twice (ณัชพล, ณัฐพล, ณัฐธิดา, ขนิษฐา) — every occurrence of
+// those must be labeled 1/2 everywhere this loop is shown, never left
+// ambiguous.
+const LOOP_BASE_ORDER = {
+  weekday: ['อารีรัตน์','ชุติมา','กนกอร','ธัญลักษณ์','วัทนี','ธนวรรณ','ณัชพล','สมิตา','พสิษฐา','ณัฐธิดา','ขนิษฐา','ณัฐพล'],
+  h12: ['ชุติมา','ณัชพล','ณัฐพล','กนกอร','ธัญลักษณ์','ณัฐธิดา','ขนิษฐา','ธนวรรณ','ณัชพล','ณัฐพล','วัทนี','สมิตา','ณัฐธิดา','ขนิษฐา','พสิษฐา'],
+  h3: ['ชุติมา','กนกอร','ธัญลักษณ์','วัทนี','ธนวรรณ','ณัชพล','สมิตา','พสิษฐา','ณัฐธิดา','ขนิษฐา','ณัฐพล'],
+  h4: ['ชุติมา','กนกอร','ธัญลักษณ์','วัทนี','ธนวรรณ','ณัชพล','สมิตา','พสิษฐา','ณัฐธิดา','ขนิษฐา','ณัฐพล'],
+  h5: ['ชุติมา','กนกอร','ธัญลักษณ์','วัทนี','ธนวรรณ','ณัชพล','สมิตา','พสิษฐา','ณัฐธิดา','ขนิษฐา','ณัฐพล'],
 };
+
+// "ชื่อ" if unique in the loop, "ชื่อ1"/"ชื่อ2" if it appears twice (h12 only).
+function occurrenceLabelAt(key, idx) {
+  const arr = LOOP_BASE_ORDER[key];
+  const name = arr[idx];
+  const isDup = arr.filter(x => x === name).length > 1;
+  if (!isDup) return name;
+  const occ = arr.slice(0, idx + 1).filter(x => x === name).length;
+  return `${name}${occ}`;
+}
+
+// Which array index a real name corresponds to — disambiguating duplicate
+// names (h12 only) using whichever real neighbor (chronologically adjacent,
+// same loop) is known. Returns null if the name isn't in the loop at all, or
+// if it's a duplicate and no given neighbor matches either candidate slot.
+function resolveLoopIndex(key, name, { prevName, nextName } = {}) {
+  const arr = LOOP_BASE_ORDER[key];
+  const candidates = [];
+  arr.forEach((n, i) => { if (n === name) candidates.push(i); });
+  if (candidates.length <= 1) return candidates[0] ?? null;
+  for (const i of candidates) {
+    if (prevName != null && arr[(i - 1 + arr.length) % arr.length] === prevName) return i;
+    if (nextName != null && arr[(i + 1) % arr.length] === nextName) return i;
+  }
+  return null;
+}
+
+// Generated from LOOP_BASE_ORDER so the displayed reference text can never
+// drift out of sync with the occurrence-labeling logic above.
+const QUEUE_RUN_ORDER_TEXT = Object.fromEntries(
+  Object.entries(LOOP_BASE_ORDER).map(([key, arr]) => [key, arr.map((_, i) => occurrenceLabelAt(key, i)).join(' → ')])
+);
 
 // Known "ล่าสุดจบที่" facts predating what's in the database, for loop types
 // whose real history the backward scan below can't find (e.g. h5 — 5-day
@@ -1064,25 +1099,10 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
     const dates = nextMonthDatesByType[key];
     return dates.length > 0 ? [...dates].sort()[0] : null;
   };
-  // Occurrence-safe "next name after lastName" lookup within the SAME fixed
-  // text sequence already shown above (so it can never drift from what's
-  // displayed) — duplicate names (only h12 has any) get a 1/2 suffix, same
-  // convention used in the master-schedule generator. Used only as a
-  // fallback when next month's real quota hasn't been set yet.
-  const nextInRunOrder = (key, lastName) => {
-    const arr = QUEUE_RUN_ORDER_TEXT[key].split(' → ').map(s => s.trim());
-    const lastIdx = arr.indexOf(lastName);
-    if (lastIdx === -1) return null;
-    const nextIdx = (lastIdx + 1) % arr.length;
-    const nextName = arr[nextIdx];
-    const isDup = arr.filter(x => x === nextName).length > 1;
-    const occ = isDup ? arr.slice(0, nextIdx + 1).filter(x => x === nextName).length : null;
-    return occ ? `${nextName}${occ}` : nextName;
-  };
 
   // Next month's REAL quota, if it's already been set — takes priority over
-  // the theoretical rotation fallback above, the same way "เดือนนี้จบที่"
-  // reflects real data rather than theory whenever real data exists.
+  // the theoretical rotation fallback, the same way "เดือนนี้จบที่" reflects
+  // real data rather than theory whenever real data exists.
   const [nextMonthMaster, setNextMonthMaster] = useState(undefined); // undefined = loading, null = no data
   useEffect(() => {
     let cancelled = false;
@@ -1107,16 +1127,14 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
     });
   }
 
+  // Full chronological list this month (not just first/last) — needed to
+  // disambiguate h12's duplicate names via their real neighbors.
   const thisMonth = {};
   ['weekday', 'h12', 'h3', 'h4', 'h5'].forEach(key => {
     const datesThisMonth = datesByType[key].filter(d => masterOriginal[d]).sort();
     if (datesThisMonth.length > 0) {
-      thisMonth[key] = {
-        firstDate: datesThisMonth[0],
-        firstDoc: doctors.find(d => d.id === masterOriginal[datesThisMonth[0]])?.name ?? '?',
-        lastDate: datesThisMonth[datesThisMonth.length - 1],
-        lastDoc: doctors.find(d => d.id === masterOriginal[datesThisMonth[datesThisMonth.length - 1]])?.name ?? '?',
-      };
+      const names = datesThisMonth.map(d => doctors.find(doc => doc.id === masterOriginal[d])?.name ?? '?');
+      thisMonth[key] = { dates: datesThisMonth, names, firstDate: datesThisMonth[0], lastDate: datesThisMonth[datesThisMonth.length - 1] };
     }
   });
 
@@ -1193,18 +1211,37 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
         {['weekday', 'h12', 'h3', 'h4', 'h5'].map((key, idx) => {
           const tm = thisMonth[key];
           const lr = lastReal ? (lastReal[key] || KNOWN_LOOP_HISTORY[key] || null) : undefined; // undefined = still loading
+          const loaded = lastReal !== null && nextMonthMaster !== undefined;
+
+          // Resolve every real name's exact array index — disambiguating
+          // h12's duplicate names (ณัชพล/ณัฐพล/ณัฐธิดา/ขนิษฐา) via whichever
+          // real chronological neighbor is known — so every box below shows
+          // the correct 1/2 suffix instead of guessing at the first match.
+          const tmNames = tm ? tm.names : null;
+          const d1Idx = tm ? resolveLoopIndex(key, tmNames[0], { prevName: lr?.name, nextName: tmNames[1] }) : null;
+          const dnIdx = tm
+            ? (tmNames.length === 1 ? d1Idx : resolveLoopIndex(key, tmNames[tmNames.length - 1], { prevName: tmNames[tmNames.length - 2] }))
+            : null;
+          const lrIdx = lr ? resolveLoopIndex(key, lr.name, { nextName: tmNames ? tmNames[0] : undefined }) : null;
+          const label = (rawName, resolvedIdx) => (resolvedIdx != null ? occurrenceLabelAt(key, resolvedIdx) : rawName);
+
+          const lrLabel = lr ? label(lr.name, lrIdx) : null;
+          const tmFirstLabel = tm ? label(tmNames[0], d1Idx) : null;
+          const tmLastLabel = tm ? label(tmNames[tmNames.length - 1], dnIdx) : null;
 
           // "เดือนต่อไปเริ่มที่" — real next-month quota if it's already been
           // set, otherwise the theoretical rotation fallback computed from
           // whichever name is currently shown last ("เดือนนี้จบที่" if set,
           // else "ล่าสุดจบที่"). Waits for both the next-month fetch and the
           // historical scan to finish before deciding.
-          const loaded = lastReal !== null && nextMonthMaster !== undefined;
+          const lastShownName = tm ? tmNames[tmNames.length - 1] : (lr ? lr.name : null);
+          const lastShownIdx = tm ? dnIdx : lrIdx;
+          const bestEffortIdx = lastShownIdx != null ? lastShownIdx : (lastShownName ? LOOP_BASE_ORDER[key].indexOf(lastShownName) : -1);
           const real = loaded ? nextMonthReal[key] : null;
-          const lastShownName = tm ? tm.lastDoc : (lr ? lr.name : null);
-          const fallbackLabel = loaded && !real && lastShownName ? nextInRunOrder(key, lastShownName) : null;
-          const nextLabel = real ? real.name : fallbackLabel;
-          const nextDate = real ? real.date : (fallbackLabel ? firstDateNextMonth(key) : null);
+          const nextRealIdx = real ? resolveLoopIndex(key, real.name, { prevName: lastShownName }) : null;
+          const fallbackNextIdx = (loaded && !real && bestEffortIdx !== -1) ? (bestEffortIdx + 1) % LOOP_BASE_ORDER[key].length : null;
+          const nextLabel = real ? label(real.name, nextRealIdx) : (fallbackNextIdx != null ? occurrenceLabelAt(key, fallbackNextIdx) : null);
+          const nextDate = real ? real.date : (fallbackNextIdx != null ? firstDateNextMonth(key) : null);
 
           return (
             <div key={key} className={idx > 0 ? 'pt-3 mt-3 border-t border-slate-100' : ''}>
@@ -1214,16 +1251,16 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
                 {lastReal === null ? (
                   <span className="text-[11px] text-slate-400">กำลังโหลด...</span>
                 ) : lr ? (
-                  <Box label="ล่าสุดจบที่" name={lr.name} date={lr.date} muted />
+                  <Box label="ล่าสุดจบที่" name={lrLabel} date={lr.date} muted />
                 ) : (
                   <span className="text-[11px] text-slate-400 italic">ยังไม่มีประวัติ</span>
                 )}
                 {tm && (
                   <>
                     <span className="text-slate-300 text-sm mb-2">→</span>
-                    <Box label="เดือนนี้เริ่มที่" name={tm.firstDoc} date={tm.firstDate} />
+                    <Box label="เดือนนี้เริ่มที่" name={tmFirstLabel} date={tm.firstDate} />
                     <span className="text-slate-300 text-sm mb-2">→</span>
-                    <Box label="เดือนนี้จบที่" name={tm.lastDoc} date={tm.lastDate} />
+                    <Box label="เดือนนี้จบที่" name={tmLastLabel} date={tm.lastDate} />
                   </>
                 )}
                 {nextLabel && (
