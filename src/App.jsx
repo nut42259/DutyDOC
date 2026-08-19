@@ -1013,6 +1013,15 @@ const QUEUE_RUN_ORDER_TEXT = {
   h5: 'ชุติมา → กนกอร → ธัญลักษณ์ → วัทนี → ธนวรรณ → ณัชพล → สมิตา → พสิษฐา → ณัฐธิดา → ขนิษฐา → ณัฐพล',
 };
 
+// Known "ล่าสุดจบที่" facts predating what's in the database, for loop types
+// whose real history the backward scan below can't find (e.g. h5 — 5-day
+// holiday streaks are rare enough that the last one may sit further back
+// than the scan's 36-month window, or before this app started recording
+// data at all). Only used when the live scan comes up empty.
+const KNOWN_LOOP_HISTORY = {
+  h5: { name: 'ณัชพล', date: '2026-04-15' },
+};
+
 // Merges the static rotation reference (for recheck) with this month's
 // actual start/end doctor per loop (previously a separate admin-only
 // "สรุปคิวเดือนนี้" block) into one panel, visible to admin and doctors alike.
@@ -1183,7 +1192,7 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
       <div>
         {['weekday', 'h12', 'h3', 'h4', 'h5'].map((key, idx) => {
           const tm = thisMonth[key];
-          const lr = lastReal ? lastReal[key] : undefined; // undefined = still loading
+          const lr = lastReal ? (lastReal[key] || KNOWN_LOOP_HISTORY[key] || null) : undefined; // undefined = still loading
 
           // "เดือนต่อไปเริ่มที่" — real next-month quota if it's already been
           // set, otherwise the theoretical rotation fallback computed from
