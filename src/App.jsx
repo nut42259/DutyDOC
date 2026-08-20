@@ -1033,71 +1033,59 @@ function occurrenceLabelAt(key, idx) {
   return `${name}${occ}`;
 }
 
-// Disambiguating duplicate names (h12 only) by exact-neighbor matching
-// breaks when the neighbor is ITSELF a duplicate name (ขนิษฐา follows both
-// ณัฐธิดา slots, so "next is ขนิษฐา" matches either one) — verified against
-// 5 real cases where it silently picked the wrong occurrence. The queue
-// pointer only ever moves FORWARD through the fixed array (skipping slots
-// sometimes, per the eligibility system, but never going backward), so the
-// correct disambiguator is: whichever candidate slot is the SMALLEST
-// forward step from a known reference position in the same direction.
-function candidatesFor(key, name) {
-  const arr = LOOP_BASE_ORDER[key];
-  const list = [];
-  arr.forEach((n, i) => { if (n === name) list.push(i); });
-  return list;
-}
-function nearestForward(key, name, afterIdx) {
-  const candidates = candidatesFor(key, name);
-  if (candidates.length === 0) return null;
-  if (candidates.length === 1) return candidates[0];
-  if (afterIdx == null) return null;
-  const len = LOOP_BASE_ORDER[key].length;
-  let best = null, bestDist = Infinity;
-  for (const c of candidates) {
-    const dist = (c - afterIdx + len) % len;
-    if (dist > 0 && dist < bestDist) { bestDist = dist; best = c; }
-  }
-  return best;
-}
-function nearestBackward(key, name, beforeIdx) {
-  const candidates = candidatesFor(key, name);
-  if (candidates.length === 0) return null;
-  if (candidates.length === 1) return candidates[0];
-  if (beforeIdx == null) return null;
-  const len = LOOP_BASE_ORDER[key].length;
-  let best = null, bestDist = Infinity;
-  for (const c of candidates) {
-    const dist = (beforeIdx - c + len) % len;
-    if (dist > 0 && dist < bestDist) { bestDist = dist; best = c; }
-  }
-  return best;
-}
-// Resolves a whole chronological run of real names (same loop type) to
-// array indices in one pass: forward using each entry's resolved
-// predecessor, then a backward fill (using each entry's resolved successor)
-// for any leading duplicate that had no predecessor context yet.
-function resolveChain(key, names) {
-  const resolved = new Array(names.length).fill(null);
-  for (let i = 0; i < names.length; i++) resolved[i] = nearestForward(key, names[i], i > 0 ? resolved[i - 1] : null);
-  for (let i = names.length - 2; i >= 0; i--) if (resolved[i] == null) resolved[i] = nearestBackward(key, names[i], resolved[i + 1]);
-  return resolved;
-}
-
 // Generated from LOOP_BASE_ORDER so the displayed reference text can never
 // drift out of sync with the occurrence-labeling logic above.
 const QUEUE_RUN_ORDER_TEXT = Object.fromEntries(
   Object.entries(LOOP_BASE_ORDER).map(([key, arr]) => [key, arr.map((_, i) => occurrenceLabelAt(key, i)).join(' → ')])
 );
 
-// Known "ล่าสุดจบที่" facts predating what's in the database, for loop types
-// whose real history the backward scan below can't find (e.g. h5 — 5-day
-// holiday streaks are rare enough that the last one may sit further back
-// than the scan's 36-month window, or before this app started recording
-// data at all). Only used when the live scan comes up empty.
-const KNOWN_LOOP_HISTORY = {
-  h5: { name: 'ณัชพล', date: '2026-04-15' },
+// One real, admin-confirmed (date, name) fact per loop — the sole anchor
+// for a PURE calendar-based simulation of "how the queue runs." Every box
+// below (ล่าสุดจบที่/เดือนนี้เริ่มที่/เดือนนี้จบที่/เดือนต่อไปเริ่มที่) is
+// derived by counting qualifying dates from here forward/backward, NEVER
+// by reading real assigned-doctor data again — confirmed necessary because
+// admin edits after generation (trading two individual dates) can and do
+// silently distort real quota data (see the Dec 2026–Jan 2027 h4 case).
+// Counts one step per QUALIFYING DATE, not per holiday-streak group —
+// verified against MasterScheduleGenerator's runQueue, which draws fresh
+// once per date within a streak (its own pointer per loop advances once
+// per date, not once per streak), matching real data showing different
+// doctors on different days of the same h3/h4/h5 streak.
+const LOOP_ANCHORS = {
+  weekday: { date: '2026-11-02', name: 'กนกอร' },
+  h12: { date: '2026-11-01', name: 'ชุติมา' },
+  h3: { date: '2026-10-16', name: 'ณัฐธิดา' },
+  h4: { date: '2026-12-31', name: 'ณัฐธิดา' },
+  h5: { date: '2026-04-15', name: 'ณัชพล' },
 };
+
+// Resolves several target dates for one loop at once (one qualifying-date
+// list build instead of one per target) to their theoretical array index —
+// counted purely from LOOP_ANCHORS[key] by calendar classification, bounded
+// to a 20-year scan window as a safety cap. Returns { [date]: index|null }.
+function theoreticalIndicesFor(key, isHolidayDate, targetDates) {
+  const anchor = LOOP_ANCHORS[key];
+  const targets = targetDates.filter(Boolean);
+  const result = {};
+  if (targets.length === 0) return result;
+  const ymOf = (d) => { const [y, m] = d.split('-').map(Number); return y * 12 + (m - 1); };
+  const allYm = [ymOf(anchor.date), ...targets.map(ymOf)];
+  const minYm = Math.min(...allYm), maxYm = Math.max(...allYm);
+  const list = [];
+  for (let ym = minYm, i = 0; ym <= maxYm && i < 240; ym++, i++) {
+    const y = Math.floor(ym / 12), m = ym % 12;
+    list.push(...classifyMonthDates(y, m, isHolidayDate)[key]);
+  }
+  list.sort();
+  const anchorPos = list.indexOf(anchor.date);
+  const anchorIdx = LOOP_BASE_ORDER[key].indexOf(anchor.name);
+  const len = LOOP_BASE_ORDER[key].length;
+  targets.forEach(d => {
+    const pos = list.indexOf(d);
+    result[d] = (pos === -1 || anchorPos === -1) ? null : (((anchorIdx + (pos - anchorPos)) % len) + len) % len;
+  });
+  return result;
+}
 
 // Merges the static rotation reference (for recheck) with this month's
 // actual start/end doctor per loop (previously a separate admin-only
@@ -1127,57 +1115,49 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
 
   const datesByType = classifyMonthDates(year, month, isHolidayDate);
 
-  // "เดือนต่อไปเริ่มที่" is purely about the fixed rotation shown in
-  // QUEUE_RUN_ORDER_TEXT (the "how the queue runs" reference), NEVER real
-  // generated/edited schedule data — even when next month's quota is
-  // already set, its dates may have been manually swapped by an admin
-  // (e.g. trading two individual dates within a holiday streak), which
-  // breaks the one-doctor-per-streak invariant the queue itself guarantees.
-  // Confirmed with real data: a 4-day streak spanning Dec 31–Jan 3 showed 4
-  // DIFFERENT doctors across it instead of one, proving the raw quota can't
-  // be trusted here — so this only ever reflects the theoretical rotation,
-  // regardless of whether real data exists for next month.
+  // "เดือนต่อไปเริ่มที่" stays PURE theory, never real quota data — real
+  // quota can be manually edited after generation (trading two individual
+  // dates), silently breaking what this box is FOR: showing what the
+  // rotation itself would produce next. Confirmed necessary with real data
+  // (a 4-day streak where days 2–3 had been swapped).
   const nextCalMonth = month === 11 ? { y: year + 1, m: 0 } : { y: year, m: month + 1 };
   const nextMonthDatesByType = classifyMonthDates(nextCalMonth.y, nextCalMonth.m, isHolidayDate);
-  const firstDateNextMonth = (key) => {
-    const dates = nextMonthDatesByType[key];
-    return dates.length > 0 ? [...dates].sort()[0] : null;
-  };
 
-  // Full chronological list this month (not just first/last) — needed to
-  // disambiguate h12's duplicate names via their real neighbors.
+  // The other three boxes ("ล่าสุดจบที่"/"เดือนนี้เริ่มที่"/"เดือนนี้จบที่")
+  // show REAL quota data as primary — that's what's actually scheduled,
+  // which is what admins/doctors need day to day, including LEGITIMATE
+  // skips (a doctor was unavailable, debt-adjusted, etc.) that a pure
+  // rotation count can't and shouldn't try to replicate. Whenever the real
+  // name differs from the theoretical one for that same date — whether
+  // from a legitimate skip or a manual edit — a small note surfaces the
+  // theoretical name too, so nothing is silently hidden either way.
   const thisMonth = {};
   ['weekday', 'h12', 'h3', 'h4', 'h5'].forEach(key => {
     const datesThisMonth = datesByType[key].filter(d => masterOriginal[d]).sort();
     if (datesThisMonth.length > 0) {
-      const names = datesThisMonth.map(d => doctors.find(doc => doc.id === masterOriginal[d])?.name ?? '?');
-      thisMonth[key] = { dates: datesThisMonth, names, firstDate: datesThisMonth[0], lastDate: datesThisMonth[datesThisMonth.length - 1] };
+      thisMonth[key] = {
+        firstDate: datesThisMonth[0],
+        firstDoc: doctors.find(d => d.id === masterOriginal[datesThisMonth[0]])?.name ?? '?',
+        lastDate: datesThisMonth[datesThisMonth.length - 1],
+        lastDoc: doctors.find(d => d.id === masterOriginal[datesThisMonth[datesThisMonth.length - 1]])?.name ?? '?',
+      };
     }
   });
 
   // "ล่าสุดจบที่" — the real most-recent assignment per loop, found by
   // actually reading past months' saved schedules (starting from the month
   // being viewed and walking backward) rather than trusting queueState's
-  // stored lastDate, which has proven stale/wrong (e.g. showing a LATER
-  // month than the one actually being viewed). Fetched in batches so a loop
-  // type with no recent history doesn't require dozens of sequential
-  // round-trips.
+  // stored lastDate, which has proven stale/wrong. Fetched in batches so a
+  // loop type with no recent history doesn't require dozens of round-trips.
   const [lastReal, setLastReal] = useState(null);
   useEffect(() => {
     let cancelled = false;
     setLastReal(null);
-    // Local to the effect (not the outer isHolidayDate closure) so the only
-    // real dependency is `holidays` itself, not a function reference that's
-    // new every render.
     const holidaySet = new Set(holidays);
     const isHoliday = (date) => dayType(date, holidaySet) === 'holiday';
     (async () => {
       const found = {};
       const remaining = new Set(['weekday', 'h12', 'h3', 'h4', 'h5']);
-      // Start from the month BEFORE the one being viewed, not the viewed
-      // month itself — "ล่าสุดจบที่" means "where the queue stood coming
-      // into this month," which should stay distinct from "เดือนนี้จบที่"
-      // even when this month has its own data.
       let y = year, m = month - 1;
       if (m < 0) { m = 11; y -= 1; }
       const BATCH = 12, MAX_BATCHES = 3; // up to 36 months back
@@ -1210,11 +1190,12 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
     return () => { cancelled = true; };
   }, [year, month, doctors, holidays]);
 
-  const Box = ({ label, name, date, muted }) => (
+  const Box = ({ label, name, date, muted, note }) => (
     <div className="flex flex-col items-start gap-0.5">
       <span className="text-[9px] font-semibold tracking-wide text-slate-400 uppercase">{label}</span>
       <span className={`rounded-md px-2.5 py-1 text-xs font-semibold text-slate-800 ${muted ? 'border border-dashed border-slate-300' : 'border border-slate-700'}`}>{name}</span>
       <span className="text-[9.5px] text-slate-400">{date ? formatDisplayDate(date) : ''}</span>
+      {note && <span className="text-[9px] text-amber-600">{note}</span>}
     </div>
   );
 
@@ -1224,49 +1205,19 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
       <div>
         {['weekday', 'h12', 'h3', 'h4', 'h5'].map((key, idx) => {
           const tm = thisMonth[key];
-          // Only fall back to a seeded known fact if the viewed month is
-          // actually AFTER it — otherwise a month before the seeded date
-          // would show it as "ล่าสุดจบที่" (last completed), which is
-          // impossible: the event hasn't happened yet relative to that view.
-          const known = KNOWN_LOOP_HISTORY[key];
-          const knownApplies = known && isoDate(year, month, 1) > known.date;
-          const lr = lastReal ? (lastReal[key] || (knownApplies ? known : null)) : undefined; // undefined = still loading
-          const loaded = lastReal !== null;
+          const lr = lastReal ? lastReal[key] : undefined; // undefined = still loading
 
-          // Resolve every real name's exact array index by walking the whole
-          // chronological chain (lr → this month's dates in order) as one
-          // sequence — disambiguating h12's duplicate names
-          // (ณัชพล/ณัฐพล/ณัฐธิดา/ขนิษฐา) via forward distance from the
-          // previous resolved slot, not just a single adjacent-name match
-          // (which breaks when that neighbor is itself a duplicate name).
-          const tmNames = tm ? tm.names : null;
-          const chainNames = [...(lr ? [lr.name] : []), ...(tmNames || [])];
-          const chainIdx = resolveChain(key, chainNames);
-          const off = lr ? 1 : 0;
-          const lrIdx = lr ? chainIdx[0] : null;
-          const d1Idx = tm ? chainIdx[off] : null;
-          const dnIdx = tm ? chainIdx[off + tmNames.length - 1] : null;
-          const label = (rawName, resolvedIdx) => (resolvedIdx != null ? occurrenceLabelAt(key, resolvedIdx) : rawName);
+          const nextDates = [...nextMonthDatesByType[key]].sort();
+          const nextDate = nextDates[0] ?? null;
+          const theoryDates = [lr?.date ?? null, tm?.firstDate ?? null, tm?.lastDate ?? null, nextDate];
+          const idxByDate = theoreticalIndicesFor(key, isHolidayDate, theoryDates);
+          const theoryNameAt = (d) => (d != null && idxByDate[d] != null ? occurrenceLabelAt(key, idxByDate[d]) : null);
+          const noteFor = (realName, d) => {
+            const theory = theoryNameAt(d);
+            return theory && theory.replace(/[12]$/, '') !== realName ? `(ทฤษฎี: ${theory})` : null;
+          };
 
-          const lrLabel = lr ? label(lr.name, lrIdx) : null;
-          const tmFirstLabel = tm ? label(tmNames[0], d1Idx) : null;
-          const tmLastLabel = tm ? label(tmNames[tmNames.length - 1], dnIdx) : null;
-
-          // "เดือนต่อไปเริ่มที่" — ALWAYS the theoretical rotation, never real
-          // quota data (see the comment above nextCalMonth for why), stepped
-          // one slot past whichever name is currently shown last
-          // ("เดือนนี้จบที่" if set, else "ล่าสุดจบที่").
-          const lastShownName = tm ? tmNames[tmNames.length - 1] : (lr ? lr.name : null);
-          const lastShownIdx = tm ? dnIdx : lrIdx;
-          // If the chain genuinely couldn't resolve an index (e.g. the only
-          // real data point is itself a duplicate name with no anchor
-          // anywhere in the chain), fall back to the first occurrence rather
-          // than letting the whole "เดือนต่อไปเริ่มที่" box silently vanish —
-          // an approximate answer beats no answer at all.
-          const bestEffortIdx = lastShownIdx != null ? lastShownIdx : (lastShownName ? LOOP_BASE_ORDER[key].indexOf(lastShownName) : -1);
-          const nextIdx = (loaded && bestEffortIdx !== -1) ? (bestEffortIdx + 1) % LOOP_BASE_ORDER[key].length : null;
-          const nextLabel = nextIdx != null ? occurrenceLabelAt(key, nextIdx) : null;
-          const nextDate = nextIdx != null ? firstDateNextMonth(key) : null;
+          const nextLabel = theoryNameAt(nextDate);
 
           return (
             <div key={key} className={idx > 0 ? 'pt-3 mt-3 border-t border-slate-100' : ''}>
@@ -1276,16 +1227,16 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
                 {lastReal === null ? (
                   <span className="text-[11px] text-slate-400">กำลังโหลด...</span>
                 ) : lr ? (
-                  <Box label="ล่าสุดจบที่" name={lrLabel} date={lr.date} muted />
+                  <Box label="ล่าสุดจบที่" name={lr.name} date={lr.date} note={noteFor(lr.name, lr.date)} muted />
                 ) : (
                   <span className="text-[11px] text-slate-400 italic">ยังไม่มีประวัติ</span>
                 )}
                 {tm && lastReal !== null && (
                   <>
                     <span className="text-slate-300 text-sm mb-2">→</span>
-                    <Box label="เดือนนี้เริ่มที่" name={tmFirstLabel} date={tm.firstDate} />
+                    <Box label="เดือนนี้เริ่มที่" name={tm.firstDoc} date={tm.firstDate} note={noteFor(tm.firstDoc, tm.firstDate)} />
                     <span className="text-slate-300 text-sm mb-2">→</span>
-                    <Box label="เดือนนี้จบที่" name={tmLastLabel} date={tm.lastDate} />
+                    <Box label="เดือนนี้จบที่" name={tm.lastDoc} date={tm.lastDate} note={noteFor(tm.lastDoc, tm.lastDate)} />
                   </>
                 )}
                 {nextLabel && (
