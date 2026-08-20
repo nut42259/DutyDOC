@@ -19,8 +19,7 @@
     "postcss": "^8.5.16",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "tailwindcss": "^3.4.19",
-    "xlsx": "^0.18.5"
+    "tailwindcss": "^3.4.19"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",

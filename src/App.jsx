@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import * as XLSX from 'xlsx';
 import {
-  Calendar as CalendarIcon, CalendarCheck, Upload, Users, Repeat, Bell, Plus, X, Check,
+  Calendar as CalendarIcon, CalendarCheck, Users, Repeat, Bell, Plus, X, Check,
   ChevronLeft, ChevronRight, Settings, UserCircle, Trash2,
   MessageCircle, Info, ArrowRightLeft, Tag, Shuffle, RotateCcw, LayoutDashboard, Download, FileText
 } from 'lucide-react';
@@ -82,7 +81,6 @@ const monthKey = (y, m) => `month-${y}-${pad2(m + 1)}`;
 const effectiveOf = (data) => !data ? {} : (data.currentScheduleGenerated
   ? { ...(data.currentSchedule || {}), ...(data.scheduleOverrides || {}) }
   : (data.masterSchedule || data.schedule || {}));
-const toCeYear = (y) => (y > 2400 ? y - 543 : y);
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
 function formatDisplayDate(iso) {
@@ -211,27 +209,6 @@ function spacingScore(assign, dateIndex, dates, date, docId) {
   return 6;
 }
 
-// IMPORTANT: different xlsx builds (Node vs. the browser bundle used in
-// artifacts) can construct { cellDates: true } Date objects slightly
-// differently, which caused a silent one-day shift depending on environment.
-// To avoid that entirely, we read cells WITHOUT cellDates and convert the
-// raw Excel serial number to a calendar date ourselves — pure arithmetic,
-// no Date-object/timezone ambiguity involved.
-function excelSerialToISO(serial) {
-  const utcMs = Math.round((serial - 25569) * 86400 * 1000);
-  const d = new Date(utcMs);
-  return isoDate(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-}
-function parseFlexibleDate(val) {
-  if (typeof val === 'number' && isFinite(val)) return excelSerialToISO(val);
-  if (val instanceof Date && !isNaN(val)) return isoDate(val.getUTCFullYear(), val.getUTCMonth(), val.getUTCDate());
-  const s = String(val).trim();
-  let m = s.match(/^(\d{3,4})-(\d{1,2})-(\d{1,2})$/);
-  if (m) return isoDate(toCeYear(Number(m[1])), Number(m[2]) - 1, Number(m[3]));
-  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{3,4})$/);
-  if (m) return isoDate(toCeYear(Number(m[3])), Number(m[2]) - 1, Number(m[1]));
-  return null;
-}
 
 // Exhaustive constraint-satisfaction search: is there ANY assignment of every
 // date to a doctor such that everyone ends up with EXACTLY their master
@@ -2064,94 +2041,6 @@ export default function App() {
 
   /* ---------- master schedule handlers ---------- */
 
-  const handleScheduleExcelUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf);
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-
-      let nextDoctors = [...doctors];
-      const nextMaster = { ...masterSchedule };
-      const nextMasterOriginal = { ...masterOriginal };
-      const nextOverrides = { ...scheduleOverrides };
-      const monthPrefix = `${year}-${pad2(month + 1)}`;
-      const newIds = [];
-      let count = 0, skippedMonth = 0, skippedBad = 0;
-
-      const firstCellIsDate = rows.length > 0 && !!parseFlexibleDate(rows[0]?.[0]);
-      const dataRows = firstCellIsDate ? rows : rows.slice(1);
-
-      dataRows.forEach(r => {
-        if (!r || r[0] == null || r[1] == null) return;
-        const dateStr = parseFlexibleDate(r[0]);
-        const name = String(r[1]).trim();
-        if (!dateStr || !name) { skippedBad++; return; }
-        if (!dateStr.startsWith(monthPrefix)) { skippedMonth++; return; }
-        let doc = nextDoctors.find(d => d.name.trim().toLowerCase() === name.toLowerCase());
-        if (!doc) { doc = { id: genId(), name }; nextDoctors = [...nextDoctors, doc]; newIds.push(doc.id); }
-        nextMaster[dateStr] = doc.id;
-        nextMasterOriginal[dateStr] = doc.id;
-        delete nextOverrides[dateStr];
-        count++;
-      });
-
-      if (count === 0) { showToast('ไม่พบวันที่ที่ตรงกับเดือนนี้ในไฟล์ ตรวจสอบรูปแบบวันที่'); return; }
-
-      setDoctors(nextDoctors);
-      await saveConfig({ holidays });
-      setMasterSchedule(nextMaster);
-      setMasterOriginal(nextMasterOriginal);
-      setScheduleOverrides({});
-      const nextActive = ensureActiveIncludes(newIds);
-      if (nextActive !== null) setActiveDoctorIds(nextActive);
-      // A freshly (re)uploaded master schedule can differ from the old one
-      // enough that the old current schedule is meaningless — reset it back
-      // to "not generated" rather than just flagging it stale, so admin
-      // makes a deliberate fresh "จัดเวร" instead of seeing a possibly very
-      // wrong leftover schedule.
-      setCurrentSchedule({});
-      setCurrentScheduleGenerated(false);
-      setScheduleViolations([]);
-      setScheduleStale(false);
-      await saveMonth({ masterSchedule: nextMaster, masterOriginal: nextMasterOriginal, scheduleOverrides: {}, activeDoctorIds: nextActive, currentSchedule: {}, currentScheduleGenerated: false, scheduleStale: false });
-      showToast(`นำเข้าโควต้าเวร ${count} วันสำเร็จ${skippedMonth ? ` (ข้าม ${skippedMonth} วันที่ไม่ตรงเดือนนี้)` : ''} — ต้องกดจัดเวรใหม่`);
-    } catch (err) {
-      showToast('อ่านไฟล์ไม่สำเร็จ ตรวจสอบรูปแบบไฟล์ (คอลัมน์ A: วันที่ · B: ชื่อแพทย์)');
-    }
-    e.target.value = '';
-  };
-
-  const manualAssignMaster = (date, docId) => {
-    const oldEff = effectiveSchedule[date] || null;
-    const newDocId = docId || null;
-    const nextStale = currentScheduleGenerated ? true : scheduleStale;
-
-    setMasterSchedule(prevMaster => {
-      const nextMaster = { ...prevMaster, [date]: newDocId };
-      setMasterOriginal(prevOriginal => {
-        const nextOriginal = { ...prevOriginal, [date]: newDocId };
-        setScheduleOverrides(prevOverrides => {
-          const nextOverrides = { ...prevOverrides };
-          delete nextOverrides[date];
-          storageSet(monthKey(year, month), { masterSchedule: nextMaster, masterOriginal: nextOriginal, currentSchedule, currentScheduleGenerated, scheduleStale: nextStale, scheduleOverrides: nextOverrides, unavailability, unavailabilityConfirmed, activeDoctorIds });
-          return nextOverrides;
-        });
-        return nextOriginal;
-      });
-      return nextMaster;
-    });
-    if (nextStale !== scheduleStale) setScheduleStale(nextStale);
-
-    if (oldEff !== newDocId) {
-      const oldName = oldEff ? getDoctor(oldEff)?.name : 'ว่าง';
-      const newName = newDocId ? getDoctor(newDocId)?.name : 'ว่าง';
-      addNotification(`โควต้าเวรวันที่ ${formatDisplayDate(date)} กำหนดเป็น ${newName} (เดิม ${oldName})`, `🔔 โควต้าเวรวันที่ ${formatDisplayDate(date)}: ${oldName} → ${newName}`);
-    }
-  };
-
   const applyManualAssignCurrent = (date, docId) => {
     const oldEff = effectiveSchedule[date] || null;
     setScheduleOverrides(prev => {
@@ -3149,10 +3038,6 @@ export default function App() {
                     className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-3 py-1.5 rounded-lg transition-colors">
                     <CalendarCheck size={14} /> จัดโควต้าเวร
                   </button>
-                  <label className="flex items-center gap-1.5 border border-dashed border-slate-300 rounded-lg px-3 py-1.5 cursor-pointer hover:border-teal-400 transition-colors text-sm font-medium text-slate-600">
-                    <Upload size={14} className="text-teal-600" /> อัปโหลด .xlsx
-                    <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleScheduleExcelUpload} />
-                  </label>
                   {hasMasterData && (
                     <button
                       onClick={() => setConfirmState({ type: 'clear-master' })}
@@ -3164,7 +3049,7 @@ export default function App() {
                 </div>
               )}
             </div>
-            <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> นี่คือโควต้าเวรที่คุณกำหนดเอง (ไฟล์ Excel: คอลัมน์ A วันที่ · B ชื่อแพทย์) การขาย/แลกเวรที่สำเร็จแล้วจะถูกปรับเข้าที่นี่โดยอัตโนมัติเพื่ออัปเดตโควตาล่าสุด{role === 'admin' ? ' — คลิกวันที่เพื่อแก้ไขได้โดยตรง' : ''}</p>
+            <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> โควต้าเวรนี้มาจากการกด "จัดโควต้าเวร" เท่านั้น (ไม่รับการแก้ไขทีละวันหรือไฟล์ Excel อีกต่อไป เพื่อไม่ให้ค่าที่แสดงใน "วิธีการรันคิวเวร" คลาดเคลื่อนจากคิวจริง) — การขาย/แลกเวรที่สำเร็จแล้วจะถูกปรับเข้าที่นี่โดยอัตโนมัติเพื่ออัปเดตโควตาล่าสุด</p>
 
             {activeDoctors.length === 0 ? (
               <EmptyState icon={Users} title="ยังไม่มีแพทย์ที่อยู่เวรเดือนนี้" hint="ไปที่แท็บ 'ตั้งค่า' เพื่อเพิ่ม/เลือกแพทย์ที่อยู่เวรเดือนนี้ก่อน" />
@@ -3175,7 +3060,7 @@ export default function App() {
                 )}
                 <CalendarGrid
                   year={year} month={month} scheduleData={masterSchedule}
-                  editable={role === 'admin'} onAssign={manualAssignMaster}
+                  editable={false}
                   allDoctors={doctors} selectableDoctors={activeDoctors}
                   holidaySet={holidaySet} unavailability={unavailability} marketplace={null}
                   compareTo={null} highlightDoctorId={highlightDoctorId} originalData={masterOriginal}
