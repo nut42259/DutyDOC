@@ -1128,43 +1128,21 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
   const datesByType = classifyMonthDates(year, month, isHolidayDate);
 
   // "เดือนต่อไปเริ่มที่" is purely about the fixed rotation shown in
-  // QUEUE_RUN_ORDER_TEXT (the "how the queue runs" reference), NOT about any
-  // real generated schedule — so it's always literally the calendar month
-  // right after the one being VIEWED, regardless of whether that next month
-  // (or even the viewed month itself) has actually had its quota set yet.
+  // QUEUE_RUN_ORDER_TEXT (the "how the queue runs" reference), NEVER real
+  // generated/edited schedule data — even when next month's quota is
+  // already set, its dates may have been manually swapped by an admin
+  // (e.g. trading two individual dates within a holiday streak), which
+  // breaks the one-doctor-per-streak invariant the queue itself guarantees.
+  // Confirmed with real data: a 4-day streak spanning Dec 31–Jan 3 showed 4
+  // DIFFERENT doctors across it instead of one, proving the raw quota can't
+  // be trusted here — so this only ever reflects the theoretical rotation,
+  // regardless of whether real data exists for next month.
   const nextCalMonth = month === 11 ? { y: year + 1, m: 0 } : { y: year, m: month + 1 };
   const nextMonthDatesByType = classifyMonthDates(nextCalMonth.y, nextCalMonth.m, isHolidayDate);
   const firstDateNextMonth = (key) => {
     const dates = nextMonthDatesByType[key];
     return dates.length > 0 ? [...dates].sort()[0] : null;
   };
-
-  // Next month's REAL quota, if it's already been set — takes priority over
-  // the theoretical rotation fallback, the same way "เดือนนี้จบที่" reflects
-  // real data rather than theory whenever real data exists.
-  const [nextMonthMaster, setNextMonthMaster] = useState(undefined); // undefined = loading, null = no data
-  useEffect(() => {
-    let cancelled = false;
-    setNextMonthMaster(undefined);
-    getMonthData(monthKey(nextCalMonth.y, nextCalMonth.m)).then(data => {
-      if (cancelled) return;
-      setNextMonthMaster(data ? (data.masterOriginal || data.masterSchedule || data.schedule || {}) : null);
-    });
-    return () => { cancelled = true; };
-  }, [nextCalMonth.y, nextCalMonth.m]);
-
-  const nextMonthReal = {};
-  if (nextMonthMaster) {
-    ['weekday', 'h12', 'h3', 'h4', 'h5'].forEach(key => {
-      const datesNextMonth = nextMonthDatesByType[key].filter(d => nextMonthMaster[d]).sort();
-      if (datesNextMonth.length > 0) {
-        nextMonthReal[key] = {
-          date: datesNextMonth[0],
-          name: doctors.find(d => d.id === nextMonthMaster[datesNextMonth[0]])?.name ?? '?',
-        };
-      }
-    });
-  }
 
   // Full chronological list this month (not just first/last) — needed to
   // disambiguate h12's duplicate names via their real neighbors.
@@ -1253,7 +1231,7 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
           const known = KNOWN_LOOP_HISTORY[key];
           const knownApplies = known && isoDate(year, month, 1) > known.date;
           const lr = lastReal ? (lastReal[key] || (knownApplies ? known : null)) : undefined; // undefined = still loading
-          const loaded = lastReal !== null && nextMonthMaster !== undefined;
+          const loaded = lastReal !== null;
 
           // Resolve every real name's exact array index by walking the whole
           // chronological chain (lr → this month's dates in order) as one
@@ -1274,11 +1252,10 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
           const tmFirstLabel = tm ? label(tmNames[0], d1Idx) : null;
           const tmLastLabel = tm ? label(tmNames[tmNames.length - 1], dnIdx) : null;
 
-          // "เดือนต่อไปเริ่มที่" — real next-month quota if it's already been
-          // set, otherwise the theoretical rotation fallback computed from
-          // whichever name is currently shown last ("เดือนนี้จบที่" if set,
-          // else "ล่าสุดจบที่"). Waits for both the next-month fetch and the
-          // historical scan to finish before deciding.
+          // "เดือนต่อไปเริ่มที่" — ALWAYS the theoretical rotation, never real
+          // quota data (see the comment above nextCalMonth for why), stepped
+          // one slot past whichever name is currently shown last
+          // ("เดือนนี้จบที่" if set, else "ล่าสุดจบที่").
           const lastShownName = tm ? tmNames[tmNames.length - 1] : (lr ? lr.name : null);
           const lastShownIdx = tm ? dnIdx : lrIdx;
           // If the chain genuinely couldn't resolve an index (e.g. the only
@@ -1287,11 +1264,9 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
           // than letting the whole "เดือนต่อไปเริ่มที่" box silently vanish —
           // an approximate answer beats no answer at all.
           const bestEffortIdx = lastShownIdx != null ? lastShownIdx : (lastShownName ? LOOP_BASE_ORDER[key].indexOf(lastShownName) : -1);
-          const real = loaded ? nextMonthReal[key] : null;
-          const nextRealIdx = real ? nearestForward(key, real.name, lastShownIdx) : null;
-          const fallbackNextIdx = (loaded && !real && bestEffortIdx !== -1) ? (bestEffortIdx + 1) % LOOP_BASE_ORDER[key].length : null;
-          const nextLabel = real ? label(real.name, nextRealIdx) : (fallbackNextIdx != null ? occurrenceLabelAt(key, fallbackNextIdx) : null);
-          const nextDate = real ? real.date : (fallbackNextIdx != null ? firstDateNextMonth(key) : null);
+          const nextIdx = (loaded && bestEffortIdx !== -1) ? (bestEffortIdx + 1) % LOOP_BASE_ORDER[key].length : null;
+          const nextLabel = nextIdx != null ? occurrenceLabelAt(key, nextIdx) : null;
+          const nextDate = nextIdx != null ? firstDateNextMonth(key) : null;
 
           return (
             <div key={key} className={idx > 0 ? 'pt-3 mt-3 border-t border-slate-100' : ''}>
