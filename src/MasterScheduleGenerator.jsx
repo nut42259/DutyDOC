@@ -76,6 +76,24 @@ export function detectGroups(year, month, isHoliday) {
     .filter(g => g.dates.length > 0);
 }
 
+// Default per-doctor {active, start, end} availability for a month's
+// generation — active_docs get the whole month, EXCEPT ชุติมา, who is
+// permanently taken out of the queue rotation starting January 2027 onward
+// (admin request). Reusing the existing skip-in-rotation mechanism
+// (runQueue already passes over inactive doctors without disturbing
+// anyone else's pointer position) instead of removing her from the
+// WDQ/H12Q/H3Q arrays outright, which would shift every other doctor's
+// index and break continuity with prior months.
+export function buildDefaultAvail({ year, month, activeDocs }) {
+  const n = daysInMonth(year, month);
+  const startDate = isoDate(year, month, 1);
+  const endDate = isoDate(year, month, n);
+  const excludedFromQueue = year >= 2027 ? new Set(['ชุติมา']) : new Set();
+  const map = {};
+  activeDocs.forEach(d => { map[d.id] = { active: !excludedFromQueue.has(d.name.trim()), start: startDate, end: endDate }; });
+  return map;
+}
+
 // Build id arrays from name arrays (duplicate names produce duplicate ids — correct for H12Q)
 export function resolveQueue(nameArr, doctors) {
   return nameArr.map(name => {
@@ -141,7 +159,7 @@ function drainPriorityQueue(queue, lt, date, avail, debt) {
   return null;
 }
 
-function generateSchedule({ year, month, isHoliday, avail, WDQ, H12Q, H3Q, qp, debt }) {
+export function generateSchedule({ year, month, isHoliday, avail, WDQ, H12Q, H3Q, qp, debt }) {
   const n = daysInMonth(year, month);
   const groups = detectGroups(year, month, isHoliday);
   const holSet = new Set(groups.flatMap(g => g.dates));
@@ -272,23 +290,13 @@ export default function MasterScheduleGenerator({ year, month, doctors, activeDo
   });
 
   // Doctor availability {id: {active, start, end}} — start/end are ISO dates.
-  // ชุติมา is permanently taken out of the queue rotation starting January
-  // 2027 onward (admin request) — defaulting her to inactive here reuses the
-  // existing skip-in-rotation mechanism (runQueue already passes over
-  // inactive doctors without disturbing anyone else's pointer position),
-  // rather than removing her from the WDQ/H12Q/H3Q arrays outright, which
-  // would shift every other doctor's index and break continuity with prior
-  // months. Admin can still flip her back to "มีเวร" for a specific month
-  // here if ever needed — this only sets the default.
-  const [avail, setAvail] = useState(() => {
-    const n = daysInMonth(year, month);
-    const endDate = isoDate(year, month, n);
-    const startDate = isoDate(year, month, 1);
-    const excludedFromQueue = year >= 2027 ? new Set(['ชุติมา']) : new Set();
-    const map = {};
-    activeDocs.forEach(d => { map[d.id] = { active: !excludedFromQueue.has(d.name.trim()), start: startDate, end: endDate }; });
-    return map;
-  });
+  // Default built by buildDefaultAvail (shared so other consumers — the
+  // queue-run-order live preview in App.jsx — replicate the exact same
+  // rules, e.g. ชุติมา's rotation exclusion, without a second hand-copy
+  // that could silently drift). Admin can still flip anyone back to
+  // "มีเวร" for a specific month here if ever needed — this only sets the
+  // default this modal starts from.
+  const [avail, setAvail] = useState(() => buildDefaultAvail({ year, month, activeDocs }));
 
   // Queue pointers (local copy, admin can adjust)
   const [qp, setQp] = useState({ weekday: queueState.weekday, h12: queueState.h12, h3: queueState.h3, h4: queueState.h4, h5: queueState.h5 });

@@ -13,7 +13,7 @@ import {
   getQueueState, setQueueState,
 } from './storage';
 import LoginScreen from './LoginScreen';
-import MasterScheduleGenerator, { detectGroups, ltFor, resolveQueue, DEFAULT_WDQ_NAMES, DEFAULT_H12Q_NAMES, DEFAULT_H3Q_NAMES } from './MasterScheduleGenerator';
+import MasterScheduleGenerator, { detectGroups, ltFor, resolveQueue, generateSchedule, buildDefaultAvail, DEFAULT_WDQ_NAMES, DEFAULT_H12Q_NAMES, DEFAULT_H3Q_NAMES } from './MasterScheduleGenerator';
 
 /* ---------------------------------- constants ---------------------------------- */
 
@@ -1039,54 +1039,6 @@ const QUEUE_RUN_ORDER_TEXT = Object.fromEntries(
   Object.entries(LOOP_BASE_ORDER).map(([key, arr]) => [key, arr.map((_, i) => occurrenceLabelAt(key, i)).join(' → ')])
 );
 
-// One real, admin-confirmed (date, name) fact per loop — the sole anchor
-// for a PURE calendar-based simulation of "how the queue runs." Every box
-// below (ล่าสุดจบที่/เดือนนี้เริ่มที่/เดือนนี้จบที่/เดือนต่อไปเริ่มที่) is
-// derived by counting qualifying dates from here forward/backward, NEVER
-// by reading real assigned-doctor data again — confirmed necessary because
-// admin edits after generation (trading two individual dates) can and do
-// silently distort real quota data (see the Dec 2026–Jan 2027 h4 case).
-// Counts one step per QUALIFYING DATE, not per holiday-streak group —
-// verified against MasterScheduleGenerator's runQueue, which draws fresh
-// once per date within a streak (its own pointer per loop advances once
-// per date, not once per streak), matching real data showing different
-// doctors on different days of the same h3/h4/h5 streak.
-const LOOP_ANCHORS = {
-  weekday: { date: '2026-11-02', name: 'กนกอร' },
-  h12: { date: '2026-11-01', name: 'ชุติมา' },
-  h3: { date: '2026-10-16', name: 'ณัฐธิดา' },
-  h4: { date: '2026-12-31', name: 'ณัฐธิดา' },
-  h5: { date: '2026-04-15', name: 'ณัชพล' },
-};
-
-// Resolves several target dates for one loop at once (one qualifying-date
-// list build instead of one per target) to their theoretical array index —
-// counted purely from LOOP_ANCHORS[key] by calendar classification, bounded
-// to a 20-year scan window as a safety cap. Returns { [date]: index|null }.
-function theoreticalIndicesFor(key, isHolidayDate, targetDates) {
-  const anchor = LOOP_ANCHORS[key];
-  const targets = targetDates.filter(Boolean);
-  const result = {};
-  if (targets.length === 0) return result;
-  const ymOf = (d) => { const [y, m] = d.split('-').map(Number); return y * 12 + (m - 1); };
-  const allYm = [ymOf(anchor.date), ...targets.map(ymOf)];
-  const minYm = Math.min(...allYm), maxYm = Math.max(...allYm);
-  const list = [];
-  for (let ym = minYm, i = 0; ym <= maxYm && i < 240; ym++, i++) {
-    const y = Math.floor(ym / 12), m = ym % 12;
-    list.push(...classifyMonthDates(y, m, isHolidayDate)[key]);
-  }
-  list.sort();
-  const anchorPos = list.indexOf(anchor.date);
-  const anchorIdx = LOOP_BASE_ORDER[key].indexOf(anchor.name);
-  const len = LOOP_BASE_ORDER[key].length;
-  targets.forEach(d => {
-    const pos = list.indexOf(d);
-    result[d] = (pos === -1 || anchorPos === -1) ? null : (((anchorIdx + (pos - anchorPos)) % len) + len) % len;
-  });
-  return result;
-}
-
 // Merges the static rotation reference (for recheck) with this month's
 // actual start/end doctor per loop (previously a separate admin-only
 // "สรุปคิวเดือนนี้" block) into one panel, visible to admin and doctors alike.
@@ -1114,23 +1066,12 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
   const isHolidayDate = (date) => dayType(date, holidaySetAll) === 'holiday';
 
   const datesByType = classifyMonthDates(year, month, isHolidayDate);
-
-  // "เดือนต่อไปเริ่มที่" stays PURE theory, never real quota data — real
-  // quota can be manually edited after generation (trading two individual
-  // dates), silently breaking what this box is FOR: showing what the
-  // rotation itself would produce next. Confirmed necessary with real data
-  // (a 4-day streak where days 2–3 had been swapped).
   const nextCalMonth = month === 11 ? { y: year + 1, m: 0 } : { y: year, m: month + 1 };
-  const nextMonthDatesByType = classifyMonthDates(nextCalMonth.y, nextCalMonth.m, isHolidayDate);
 
-  // The other three boxes ("ล่าสุดจบที่"/"เดือนนี้เริ่มที่"/"เดือนนี้จบที่")
-  // show REAL quota data as primary — that's what's actually scheduled,
-  // which is what admins/doctors need day to day, including LEGITIMATE
-  // skips (a doctor was unavailable, debt-adjusted, etc.) that a pure
-  // rotation count can't and shouldn't try to replicate. Whenever the real
-  // name differs from the theoretical one for that same date — whether
-  // from a legitimate skip or a manual edit — a small note surfaces the
-  // theoretical name too, so nothing is silently hidden either way.
+  // "ล่าสุดจบที่"/"เดือนนี้เริ่มที่"/"เดือนนี้จบที่" — REAL quota data, which
+  // is complete ground truth for any month it's been generated for
+  // (including every legitimate skip: debt priority, per-month active-
+  // doctor lists, etc. — the real algorithm already applied all of that).
   const thisMonth = {};
   ['weekday', 'h12', 'h3', 'h4', 'h5'].forEach(key => {
     const datesThisMonth = datesByType[key].filter(d => masterOriginal[d]).sort();
@@ -1190,12 +1131,80 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
     return () => { cancelled = true; };
   }, [year, month, doctors, holidays]);
 
-  const Box = ({ label, name, date, muted, note }) => (
+  // "เดือนต่อไปเริ่มที่" — real next-month quota if it's already been
+  // generated (ground truth); otherwise a LIVE preview of "what would
+  // จัดโควต้าเวร produce right now," by literally re-running the real
+  // generation algorithm (generateSchedule/buildDefaultAvail — the exact
+  // same code MasterScheduleGenerator uses, not a reimplementation) seeded
+  // with the CURRENT live queue pointers and debt. This is what makes it
+  // genuinely skip-aware — debt-priority draining, per-month active-doctor
+  // lists, the ชุติมา 2027+ rotation exclusion — all apply automatically,
+  // because it's the real algorithm, not a guess — while staying immune to
+  // any manual edit made to a saved schedule after the fact, since it never
+  // reads masterOriginal for months it simulates. Walks forward past the
+  // immediate next month (carrying qp/debt through each simulated month)
+  // for any loop type with no qualifying date there yet (h3/h4/h5 don't
+  // occur every month), bounded to 24 simulated months.
+  const [nextResult, setNextResult] = useState(undefined); // undefined = loading
+  useEffect(() => {
+    let cancelled = false;
+    setNextResult(undefined);
+    (async () => {
+      const holidaySet = new Set(holidays);
+      const isHoliday = (date) => dayType(date, holidaySet) === 'holiday';
+      const found = {};
+      const remaining = new Set(['weekday', 'h12', 'h3', 'h4', 'h5']);
+
+      const nextData = await getMonthData(monthKey(nextCalMonth.y, nextCalMonth.m));
+      if (cancelled) return;
+      const nextRealMaster = nextData ? (nextData.masterOriginal || nextData.masterSchedule || nextData.schedule || {}) : null;
+      const nextHasRealData = nextRealMaster && Object.keys(nextRealMaster).length > 0;
+      if (nextHasRealData) {
+        const dbt = classifyMonthDates(nextCalMonth.y, nextCalMonth.m, isHoliday);
+        remaining.forEach(key => {
+          const dates = dbt[key].filter(d => nextRealMaster[d]).sort();
+          if (dates.length > 0) found[key] = { date: dates[0], name: doctors.find(d => d.id === nextRealMaster[dates[0]])?.name ?? '?' };
+        });
+        [...remaining].forEach(key => { if (found[key]) remaining.delete(key); });
+      }
+
+      if (remaining.size > 0) {
+        const qs = await getQueueState();
+        if (cancelled) return;
+        const WDQ = resolveQueue(qs.WDQ ?? DEFAULT_WDQ_NAMES, doctors);
+        const H12Q = resolveQueue(qs.H12Q ?? DEFAULT_H12Q_NAMES, doctors);
+        const H3Q = resolveQueue(qs.H3Q ?? DEFAULT_H3Q_NAMES, doctors);
+        let qp = { weekday: qs.weekday, h12: qs.h12, h3: qs.h3, h4: qs.h4, h5: qs.h5 };
+        let debt = JSON.parse(JSON.stringify(qs.debt || {}));
+        let y = nextCalMonth.y, m = nextCalMonth.m;
+        if (nextHasRealData) { m += 1; if (m > 11) { m = 0; y += 1; } }
+        for (let i = 0; i < 24 && remaining.size > 0 && !cancelled; i++) {
+          const monthData = await getMonthData(monthKey(y, m));
+          const activeIds = monthData && monthData.activeDoctorIds !== undefined ? monthData.activeDoctorIds : null;
+          const activeDocs = activeIds === null ? doctors : doctors.filter(d => activeIds.includes(d.id));
+          const avail = buildDefaultAvail({ year: y, month: m, activeDocs });
+          const result = generateSchedule({ year: y, month: m, isHoliday, avail, WDQ, H12Q, H3Q, qp, debt });
+          const dbt = classifyMonthDates(y, m, isHoliday);
+          remaining.forEach(key => {
+            const dates = dbt[key].filter(d => result.schedule[d]).sort();
+            if (dates.length > 0) found[key] = { date: dates[0], name: doctors.find(d => d.id === result.schedule[dates[0]])?.name ?? '?' };
+          });
+          [...remaining].forEach(key => { if (found[key]) remaining.delete(key); });
+          qp = result.newQp;
+          debt = result.remainingDebt;
+          m += 1; if (m > 11) { m = 0; y += 1; }
+        }
+      }
+      if (!cancelled) setNextResult(found);
+    })();
+    return () => { cancelled = true; };
+  }, [year, month, doctors, holidays]);
+
+  const Box = ({ label, name, date, muted }) => (
     <div className="flex flex-col items-start gap-0.5">
       <span className="text-[9px] font-semibold tracking-wide text-slate-400 uppercase">{label}</span>
       <span className={`rounded-md px-2.5 py-1 text-xs font-semibold text-slate-800 ${muted ? 'border border-dashed border-slate-300' : 'border border-slate-700'}`}>{name}</span>
       <span className="text-[9.5px] text-slate-400">{date ? formatDisplayDate(date) : ''}</span>
-      {note && <span className="text-[9px] text-amber-600">{note}</span>}
     </div>
   );
 
@@ -1206,18 +1215,9 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
         {['weekday', 'h12', 'h3', 'h4', 'h5'].map((key, idx) => {
           const tm = thisMonth[key];
           const lr = lastReal ? lastReal[key] : undefined; // undefined = still loading
-
-          const nextDates = [...nextMonthDatesByType[key]].sort();
-          const nextDate = nextDates[0] ?? null;
-          const theoryDates = [lr?.date ?? null, tm?.firstDate ?? null, tm?.lastDate ?? null, nextDate];
-          const idxByDate = theoreticalIndicesFor(key, isHolidayDate, theoryDates);
-          const theoryNameAt = (d) => (d != null && idxByDate[d] != null ? occurrenceLabelAt(key, idxByDate[d]) : null);
-          const noteFor = (realName, d) => {
-            const theory = theoryNameAt(d);
-            return theory && theory.replace(/[12]$/, '') !== realName ? `(ทฤษฎี: ${theory})` : null;
-          };
-
-          const nextLabel = theoryNameAt(nextDate);
+          const next = nextResult ? nextResult[key] : undefined; // undefined = still loading
+          const nextLabel = next?.name ?? null;
+          const nextDate = next?.date ?? null;
 
           return (
             <div key={key} className={idx > 0 ? 'pt-3 mt-3 border-t border-slate-100' : ''}>
@@ -1227,16 +1227,16 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
                 {lastReal === null ? (
                   <span className="text-[11px] text-slate-400">กำลังโหลด...</span>
                 ) : lr ? (
-                  <Box label="ล่าสุดจบที่" name={lr.name} date={lr.date} note={noteFor(lr.name, lr.date)} muted />
+                  <Box label="ล่าสุดจบที่" name={lr.name} date={lr.date} muted />
                 ) : (
                   <span className="text-[11px] text-slate-400 italic">ยังไม่มีประวัติ</span>
                 )}
                 {tm && lastReal !== null && (
                   <>
                     <span className="text-slate-300 text-sm mb-2">→</span>
-                    <Box label="เดือนนี้เริ่มที่" name={tm.firstDoc} date={tm.firstDate} note={noteFor(tm.firstDoc, tm.firstDate)} />
+                    <Box label="เดือนนี้เริ่มที่" name={tm.firstDoc} date={tm.firstDate} />
                     <span className="text-slate-300 text-sm mb-2">→</span>
-                    <Box label="เดือนนี้จบที่" name={tm.lastDoc} date={tm.lastDate} note={noteFor(tm.lastDoc, tm.lastDate)} />
+                    <Box label="เดือนนี้จบที่" name={tm.lastDoc} date={tm.lastDate} />
                   </>
                 )}
                 {nextLabel && (
