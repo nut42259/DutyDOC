@@ -1039,6 +1039,58 @@ const QUEUE_RUN_ORDER_TEXT = Object.fromEntries(
   Object.entries(LOOP_BASE_ORDER).map(([key, arr]) => [key, arr.map((_, i) => occurrenceLabelAt(key, i)).join(' → ')])
 );
 
+// Disambiguating h12's duplicate names (only h12 has any: ณัชพล, ณัฐพล,
+// ณัฐธิดา, ขนิษฐา each appear twice) requires knowing WHICH of the two
+// array slots a given real name came from — the pointer only ever moves
+// FORWARD through the fixed array (skipping slots sometimes, never
+// backward), so the correct disambiguator is: whichever candidate slot is
+// the smallest forward/backward step from an already-resolved neighbor in
+// the same real chronological chain (lr → this month's dates in order →
+// next result), not a single adjacent-name match (which breaks when that
+// neighbor is itself a duplicate name — verified against real data).
+function candidatesFor(key, name) {
+  const arr = LOOP_BASE_ORDER[key];
+  const list = [];
+  arr.forEach((n, i) => { if (n === name) list.push(i); });
+  return list;
+}
+function nearestForward(key, name, afterIdx) {
+  const candidates = candidatesFor(key, name);
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+  if (afterIdx == null) return null;
+  const len = LOOP_BASE_ORDER[key].length;
+  let best = null, bestDist = Infinity;
+  for (const c of candidates) {
+    const dist = (c - afterIdx + len) % len;
+    if (dist > 0 && dist < bestDist) { bestDist = dist; best = c; }
+  }
+  return best;
+}
+function nearestBackward(key, name, beforeIdx) {
+  const candidates = candidatesFor(key, name);
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+  if (beforeIdx == null) return null;
+  const len = LOOP_BASE_ORDER[key].length;
+  let best = null, bestDist = Infinity;
+  for (const c of candidates) {
+    const dist = (beforeIdx - c + len) % len;
+    if (dist > 0 && dist < bestDist) { bestDist = dist; best = c; }
+  }
+  return best;
+}
+// Resolves a whole chronological run of real names (same loop type) to
+// array indices in one pass: forward using each entry's resolved
+// predecessor, then a backward fill (using each entry's resolved successor)
+// for any leading duplicate that had no predecessor context yet.
+function resolveChain(key, names) {
+  const resolved = new Array(names.length).fill(null);
+  for (let i = 0; i < names.length; i++) resolved[i] = nearestForward(key, names[i], i > 0 ? resolved[i - 1] : null);
+  for (let i = names.length - 2; i >= 0; i--) if (resolved[i] == null) resolved[i] = nearestBackward(key, names[i], resolved[i + 1]);
+  return resolved;
+}
+
 // Merges the static rotation reference (for recheck) with this month's
 // actual start/end doctor per loop (previously a separate admin-only
 // "สรุปคิวเดือนนี้" block) into one panel, visible to admin and doctors alike.
@@ -1076,12 +1128,8 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
   ['weekday', 'h12', 'h3', 'h4', 'h5'].forEach(key => {
     const datesThisMonth = datesByType[key].filter(d => masterOriginal[d]).sort();
     if (datesThisMonth.length > 0) {
-      thisMonth[key] = {
-        firstDate: datesThisMonth[0],
-        firstDoc: doctors.find(d => d.id === masterOriginal[datesThisMonth[0]])?.name ?? '?',
-        lastDate: datesThisMonth[datesThisMonth.length - 1],
-        lastDoc: doctors.find(d => d.id === masterOriginal[datesThisMonth[datesThisMonth.length - 1]])?.name ?? '?',
-      };
+      const names = datesThisMonth.map(d => doctors.find(doc => doc.id === masterOriginal[d])?.name ?? '?');
+      thisMonth[key] = { dates: datesThisMonth, names, firstDate: datesThisMonth[0], lastDate: datesThisMonth[datesThisMonth.length - 1] };
     }
   });
 
@@ -1225,7 +1273,27 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
           const tm = thisMonth[key];
           const lr = lastReal ? lastReal[key] : undefined; // undefined = still loading
           const next = nextResult ? nextResult[key] : undefined; // undefined = still loading
-          const nextLabel = next?.name ?? null;
+
+          // Chain-resolve occurrence indices across the whole real
+          // chronological run (lr → this month's dates in order → next
+          // result) in one pass, so h12's duplicate names
+          // (ณัชพล/ณัฐพล/ณัฐธิดา/ขนิษฐา) get the correct 1/2 suffix
+          // everywhere instead of guessing from an isolated name.
+          const tmNames = tm ? tm.names : null;
+          const chainNames = [...(lr ? [lr.name] : []), ...(tmNames || []), ...(next ? [next.name] : [])];
+          const chainIdx = resolveChain(key, chainNames);
+          let pos = 0;
+          const lrIdx = lr ? chainIdx[pos++] : null;
+          const d1Idx = tm ? chainIdx[pos] : null;
+          const dnIdx = tm ? chainIdx[pos + tmNames.length - 1] : null;
+          if (tm) pos += tmNames.length;
+          const nextIdx = next ? chainIdx[pos] : null;
+          const label = (rawName, resolvedIdx) => (resolvedIdx != null ? occurrenceLabelAt(key, resolvedIdx) : rawName);
+
+          const lrLabel = lr ? label(lr.name, lrIdx) : null;
+          const tmFirstLabel = tm ? label(tmNames[0], d1Idx) : null;
+          const tmLastLabel = tm ? label(tmNames[tmNames.length - 1], dnIdx) : null;
+          const nextLabel = next ? label(next.name, nextIdx) : null;
           const nextDate = next?.date ?? null;
 
           return (
@@ -1236,16 +1304,16 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
                 {lastReal === null ? (
                   <span className="text-[11px] text-slate-400">กำลังโหลด...</span>
                 ) : lr ? (
-                  <Box label="ล่าสุดจบที่" name={lr.name} date={lr.date} muted />
+                  <Box label="ล่าสุดจบที่" name={lrLabel} date={lr.date} muted />
                 ) : (
                   <span className="text-[11px] text-slate-400 italic">ยังไม่มีประวัติ</span>
                 )}
                 {tm && lastReal !== null && (
                   <>
                     <span className="text-slate-300 text-sm mb-2">→</span>
-                    <Box label="เดือนนี้เริ่มที่" name={tm.firstDoc} date={tm.firstDate} />
+                    <Box label="เดือนนี้เริ่มที่" name={tmFirstLabel} date={tm.firstDate} />
                     <span className="text-slate-300 text-sm mb-2">→</span>
-                    <Box label="เดือนนี้จบที่" name={tm.lastDoc} date={tm.lastDate} />
+                    <Box label="เดือนนี้จบที่" name={tmLastLabel} date={tm.lastDate} />
                   </>
                 )}
                 {nextLabel && (
