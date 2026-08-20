@@ -1590,22 +1590,43 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
   const [pendingAdjacentAssign, setPendingAdjacentAssign] = useState(null);
-  // Wraps the current-schedule header + calendar so "บันทึกตารางเวร"
+  // Wraps the current-schedule header + calendar so "Save to JPG"
   // can capture exactly that region (not the whole page, not the nav
   // buttons above it) as an image.
   const currentScheduleCaptureRef = useRef(null);
   const [savingScheduleImage, setSavingScheduleImage] = useState(false);
   const [exportingDocx, setExportingDocx] = useState(false);
+  // "อัพเดทครั้งที่ ... วันที่ ... เวลา ..." baked into the captured image
+  // only (via savingScheduleImage below) — a persistent per-month counter
+  // (saved to month_data, fresh-read-then-write like the rest of this file)
+  // plus the real save timestamp, so re-saves after manual edits are
+  // distinguishable from each other.
+  const [saveStamp, setSaveStamp] = useState(null);
   const saveCurrentScheduleImage = async () => {
     const el = currentScheduleCaptureRef.current;
     if (!el) return;
-    // savingScheduleImage also drives an export-only render tweak below
-    // (the manual-edit blue-border indicator is hidden) that only makes
-    // sense in a saved image, not the live admin view. Double rAF waits
-    // for React to actually commit and paint that state change before
-    // html2canvas captures the DOM — a single rAF (or none) risks the
-    // capture happening before the browser has applied it.
+    // savingScheduleImage also drives export-only render tweaks below (the
+    // manual-edit blue-border indicator is hidden, the save-stamp footer is
+    // shown) that only make sense in a saved image, not the live admin
+    // view. Double rAF waits for React to actually commit and paint those
+    // state changes before html2canvas captures the DOM — a single rAF (or
+    // none) risks the capture happening before the browser has applied it.
     setSavingScheduleImage(true);
+    try {
+      const mk = monthKey(year, month);
+      const raw = (await getMonthData(mk)) || {};
+      const nextCount = (raw.imageSaveCount || 0) + 1;
+      await setMonthData(mk, { ...raw, imageSaveCount: nextCount });
+      const now = new Date();
+      setSaveStamp({
+        count: nextCount,
+        dateStr: `${now.getDate()} ${THAI_MONTHS[now.getMonth()]} ${now.getFullYear() + 543}`,
+        timeStr: `${pad2(now.getHours())}:${pad2(now.getMinutes())}`,
+      });
+    } catch {
+      // Non-fatal — the image can still save without the stamp reflecting
+      // a persisted count; fall through to the capture below regardless.
+    }
     await new Promise(resolve => requestAnimationFrame(resolve));
     await new Promise(resolve => requestAnimationFrame(resolve));
     try {
@@ -1644,6 +1665,7 @@ export default function App() {
       showToast('บันทึกรูปภาพไม่สำเร็จ ลองอีกครั้ง');
     } finally {
       setSavingScheduleImage(false);
+      setSaveStamp(null);
     }
   };
 
@@ -3010,7 +3032,7 @@ export default function App() {
                   disabled={savingScheduleImage}
                   className="flex items-center gap-1.5 text-sm font-medium text-teal-700 hover:bg-teal-50 disabled:opacity-50 disabled:cursor-wait px-3 py-2 rounded-lg transition-colors border border-teal-200"
                 >
-                  <Download size={14} /> {savingScheduleImage ? 'กำลังบันทึก...' : 'บันทึกตารางเวร'}
+                  <Download size={14} /> {savingScheduleImage ? 'กำลังบันทึก...' : 'Save to JPG'}
                 </button>
               )}
               {role === 'admin' && currentScheduleGenerated && (
@@ -3076,6 +3098,11 @@ export default function App() {
                     violationDates={[...liveViolations]}
                     hideUnavailableCount={savingScheduleImage}
                   />
+                  {savingScheduleImage && saveStamp && (
+                    <p className="text-[10px] text-slate-400 text-center mt-2">
+                      อัพเดทครั้งที่ {saveStamp.count} วันที่ {saveStamp.dateStr} เวลา {saveStamp.timeStr} น.
+                    </p>
+                  )}
                 </div>
                 {role === 'admin' && <p className="text-xs text-slate-400 mt-2 flex items-center gap-1"><Info size={12} /> แถบสีฟ้าด้านซ้ายของช่อง = วันนี้ถูกแก้ไขเฉพาะจุดด้วยมือ · ⚠️ = วันนี้ไม่ตรงเงื่อนไข (อยู่เวรวันที่แจ้งไม่สะดวก หรืออยู่เวรติดกัน) ไม่ว่าจะมาจากตอนจัดเวรหรือแก้ไขเองทีหลัง</p>}
 
