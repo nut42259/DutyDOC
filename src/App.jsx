@@ -1409,7 +1409,7 @@ function OverviewTab({ year, month, doctorsWithShifts, hasMasterData, unavailabi
 
 /* ---------------------------------- calendar grid (shared) ---------------------------------- */
 
-function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctors, selectableDoctors, holidaySet, unavailability, marketplace, compareTo, highlightDoctorId, originalData, violationDates, hideUnavailableCount = false }) {
+function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctors, selectableDoctors, holidaySet, unavailability, marketplace, compareTo, highlightDoctorId, originalData, violationDates, hideUnavailableCount = false, manualEditFlagDates = null }) {
   const [editingDate, setEditingDate] = useState(null);
   const getDoctor = (id) => allDoctors.find(d => d.id === id);
   const doctorIndex = (id) => allDoctors.findIndex(d => d.id === id);
@@ -1438,6 +1438,7 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
           const isEditing = editingDate === date;
           const compareId = compareTo ? (compareTo[date] || null) : null;
           const diverged = !!(compareTo && compareId && docId !== compareId);
+          const manuallyFlagged = !!(manualEditFlagDates && manualEditFlagDates.has(date));
           const isMine = !!(highlightDoctorId && docId === highlightDoctorId);
           const isViolation = !!(violationDates && violationDates.includes(date));
           const origId = originalData ? (originalData[date] || null) : null;
@@ -1446,11 +1447,12 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
           if (unavailDoctors.length) titleParts.push(`ไม่สะดวก: ${unavailDoctors.map(d => d.name).join(', ')}`);
           if (diverged) titleParts.push(`เดิมตามโควต้าเวร: ${getDoctor(compareId)?.name || '-'}`);
           if (traded) titleParts.push(`ขาย/แลกจาก: ${getDoctor(origId)?.name || '-'}`);
+          if (manuallyFlagged) titleParts.push('แก้ไข manual หลังเซฟล่าสุด');
 
           return (
             <div
               key={date}
-              className={`relative rounded-lg border p-1.5 min-h-[64px] min-w-0 flex flex-col gap-1 ${type === 'holiday' ? 'bg-rose-100 border-rose-200' : 'bg-white border-slate-200'} ${diverged ? 'border-l-4 border-l-sky-400' : ''} ${isMine ? `ring-2 ring-offset-1 ${color.ring}` : ''} ${editable ? 'cursor-pointer hover:border-teal-300' : ''}`}
+              className={`relative rounded-lg border p-1.5 min-h-[64px] min-w-0 flex flex-col gap-1 ${type === 'holiday' ? 'bg-rose-100 border-rose-200' : 'bg-white border-slate-200'} ${manuallyFlagged ? 'border-l-4 border-l-amber-400' : ''} ${isMine ? `ring-2 ring-offset-1 ${color.ring}` : ''} ${editable ? 'cursor-pointer hover:border-teal-300' : ''}`}
               onClick={() => editable && setEditingDate(date)}
               title={titleParts.join(' · ')}
             >
@@ -1546,6 +1548,15 @@ export default function App() {
   const [scheduleViolations, setScheduleViolations] = useState([]); // dates where all-unavailable fallback was used
   const [scheduleStale, setScheduleStale] = useState(false); // true once inputs changed after the last "จัดเวร"
   const [scheduleOverrides, setScheduleOverrides] = useState({});
+  // Which dates show the yellow "แก้ manual หลัง save ล่าสุด" bar in the
+  // ตารางเวร tab. null = "Save to JPG" has never been clicked for this
+  // month, so nothing is tracked and no bar ever shows. Once non-null,
+  // `dates` accumulates every admin manual-edit within the current "round"
+  // (the span since the flags were last cleared) — saving itself never
+  // clears them, only sets `pendingClear` so the NEXT manual edit (not the
+  // save) wipes the previous round's flags before starting a new one. See
+  // saveCurrentScheduleImage and applyManualAssignCurrent.
+  const [manualEditFlags, setManualEditFlags] = useState(null);
   const [unavailability, setUnavailability] = useState({});
   const [unavailabilityConfirmed, setUnavailabilityConfirmed] = useState([]);
   const [activeDoctorIds, setActiveDoctorIds] = useState(null); // null = everyone active
@@ -1585,18 +1596,27 @@ export default function App() {
   const saveCurrentScheduleImage = async () => {
     const el = currentScheduleCaptureRef.current;
     if (!el) return;
-    // savingScheduleImage also drives export-only render tweaks below (the
-    // manual-edit blue-border indicator is hidden, the save-stamp footer is
-    // shown) that only make sense in a saved image, not the live admin
-    // view. Double rAF waits for React to actually commit and paint those
-    // state changes before html2canvas captures the DOM — a single rAF (or
-    // none) risks the capture happening before the browser has applied it.
+    // savingScheduleImage also drives an export-only render tweak below
+    // (the save-stamp footer is shown) that only makes sense in a saved
+    // image, not the live admin view. Double rAF waits for React to
+    // actually commit and paint that state change before html2canvas
+    // captures the DOM — a single rAF (or none) risks the capture
+    // happening before the browser has applied it.
     setSavingScheduleImage(true);
     try {
       const mk = monthKey(year, month);
       const raw = (await getMonthData(mk)) || {};
       const nextCount = (raw.imageSaveCount || 0) + 1;
-      await setMonthData(mk, { ...raw, imageSaveCount: nextCount });
+      // Yellow-bar tracking: the first-ever save starts an empty round.
+      // Later saves never clear an already-flagged round directly — they
+      // just mark it pendingClear, so the round's flags keep showing until
+      // the NEXT manual edit (not this save) wipes them and starts fresh.
+      const rawFlags = raw.manualEditFlags || null;
+      const nextFlags = rawFlags === null
+        ? { dates: [], pendingClear: false }
+        : (rawFlags.dates.length > 0 ? { ...rawFlags, pendingClear: true } : rawFlags);
+      await setMonthData(mk, { ...raw, imageSaveCount: nextCount, manualEditFlags: nextFlags });
+      setManualEditFlags(nextFlags);
       const now = new Date();
       setSaveStamp({
         count: nextCount,
@@ -1943,7 +1963,7 @@ export default function App() {
       if (!data) {
         setMasterSchedule({}); setMasterOriginal({}); setCurrentSchedule({}); setCurrentScheduleGenerated(false); setScheduleStale(false); setScheduleViolations([]);
         setScheduleOverrides({}); setUnavailability(mergedUnavail); setUnavailabilityConfirmed([]); setActiveDoctorIds(null);
-        setMonthQueueSnapshot(null);
+        setMonthQueueSnapshot(null); setManualEditFlags(null);
       } else {
         const master = data.masterSchedule || data.schedule || {}; // data.schedule = legacy fallback
         setMasterSchedule(master);
@@ -1960,6 +1980,7 @@ export default function App() {
         setUnavailabilityConfirmed(data.unavailabilityConfirmed || []);
         setActiveDoctorIds(data.activeDoctorIds !== undefined ? data.activeDoctorIds : null);
         setMonthQueueSnapshot(data.queueStateBeforeGen || null);
+        setManualEditFlags(data.manualEditFlags || null);
       }
     })();
   }, [year, month, queueState]);
@@ -2043,9 +2064,17 @@ export default function App() {
 
   const applyManualAssignCurrent = (date, docId) => {
     const oldEff = effectiveSchedule[date] || null;
+    // Yellow-bar tracking: null (never saved yet) stays null — no tracking
+    // until "Save to JPG" has run at least once. Otherwise, this edit joins
+    // the CURRENT round unless a save happened since the round's flags were
+    // last set (pendingClear), in which case this edit starts a fresh round.
+    const nextFlags = manualEditFlags === null ? null : manualEditFlags.pendingClear
+      ? { dates: [date], pendingClear: false }
+      : { dates: manualEditFlags.dates.includes(date) ? manualEditFlags.dates : [...manualEditFlags.dates, date], pendingClear: false };
+    if (nextFlags) setManualEditFlags(nextFlags);
     setScheduleOverrides(prev => {
       const next = { ...prev, [date]: docId || null };
-      storageSet(monthKey(year, month), { masterSchedule, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleStale, scheduleOverrides: next, unavailability, unavailabilityConfirmed, activeDoctorIds });
+      storageSet(monthKey(year, month), { masterSchedule, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleStale, scheduleOverrides: next, unavailability, unavailabilityConfirmed, activeDoctorIds, manualEditFlags: nextFlags });
       return next;
     });
     if (oldEff !== (docId || null)) {
@@ -2986,9 +3015,10 @@ export default function App() {
                     editable={role === 'admin'} onAssign={manualAssignCurrent}
                     allDoctors={doctors} selectableDoctors={activeDoctors}
                     holidaySet={holidaySet} unavailability={unavailability} marketplace={marketplace}
-                    compareTo={savingScheduleImage ? null : currentSchedule} highlightDoctorId={highlightDoctorId}
+                    compareTo={currentSchedule} highlightDoctorId={highlightDoctorId}
                     violationDates={[...liveViolations]}
                     hideUnavailableCount={savingScheduleImage}
+                    manualEditFlagDates={manualEditFlags ? new Set(manualEditFlags.dates) : null}
                   />
                   {savingScheduleImage && saveStamp && (
                     <p className="text-[10px] text-slate-400 text-center mt-2">
@@ -2996,7 +3026,7 @@ export default function App() {
                     </p>
                   )}
                 </div>
-                {role === 'admin' && <p className="text-xs text-slate-400 mt-2 flex items-center gap-1"><Info size={12} /> แถบสีฟ้าด้านซ้ายของช่อง = วันนี้ถูกแก้ไขเฉพาะจุดด้วยมือ · ⚠️ = วันนี้ไม่ตรงเงื่อนไข (อยู่เวรวันที่แจ้งไม่สะดวก หรืออยู่เวรติดกัน) ไม่ว่าจะมาจากตอนจัดเวรหรือแก้ไขเองทีหลัง</p>}
+                {role === 'admin' && <p className="text-xs text-slate-400 mt-2 flex items-center gap-1"><Info size={12} /> แถบสีเหลืองด้านซ้ายของช่อง = วันนี้ถูกแก้ไขเฉพาะจุดด้วยมือ หลังจากกด "Save to JPG" ครั้งล่าสุด (จะหายไปเมื่อแก้ไขรอบใหม่หลังเซฟครั้งถัดไป) · ⚠️ = วันนี้ไม่ตรงเงื่อนไข (อยู่เวรวันที่แจ้งไม่สะดวก หรืออยู่เวรติดกัน) ไม่ว่าจะมาจากตอนจัดเวรหรือแก้ไขเองทีหลัง</p>}
 
                 {liveViolations.size > 0 && (
                   <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5 flex items-start gap-2">
