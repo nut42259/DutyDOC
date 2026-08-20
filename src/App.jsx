@@ -2074,7 +2074,13 @@ export default function App() {
     if (nextFlags) setManualEditFlags(nextFlags);
     setScheduleOverrides(prev => {
       const next = { ...prev, [date]: docId || null };
-      storageSet(monthKey(year, month), { masterSchedule, masterOriginal, currentSchedule, currentScheduleGenerated, scheduleStale, scheduleOverrides: next, unavailability, unavailabilityConfirmed, activeDoctorIds, manualEditFlags: nextFlags });
+      // Fresh-read-then-merge (saveMonth), not a blind overwrite of the
+      // whole record — this used to hardcode a fixed field list, which
+      // silently wiped out any field not named there (imageSaveCount,
+      // queueStateBeforeGen, scheduleViolations, ...) on every single
+      // manual edit, since setMonthData replaces the whole JSONB column
+      // rather than merging it.
+      saveMonth({ scheduleOverrides: next, manualEditFlags: nextFlags });
       return next;
     });
     if (oldEff !== (docId || null)) {
