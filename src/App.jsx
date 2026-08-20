@@ -543,13 +543,21 @@ function buildCurrentSchedule({ doctors, year, month, masterSchedule, unavailabi
     return true;
   }
 
-  // Seed with the master schedule — already balanced & (assuming a sane
-  // master) adjacency-safe — then patch every date whose owner can't work
-  // (including a boundary date whose nominal owner conflicts with the
-  // neighboring month's actual assignment).
+  // Seed with the master schedule — already balanced, but NOT guaranteed
+  // adjacency-safe: the weekday queue and the holiday queues (h12/h3/h4/h5)
+  // rotate completely independently when the quota is generated, so nothing
+  // stops the same doctor landing on a weekday date immediately next to a
+  // holiday date assigned by a different loop's pointer, purely by
+  // coincidence (confirmed with real data: ขนิษฐา on both a Fri weekday slot
+  // and the immediately-following Sat holiday slot). A quota-adjacent date
+  // is deliberately left unseeded here — not placed at its nominal owner —
+  // so it falls through to the solveDate/tryPlace relocation search below,
+  // the same machinery that already handles an unavailable nominal owner,
+  // instead of silently reproducing the quota's own adjacency conflict with
+  // zero violation ever recorded.
   dates.forEach(date => {
     const nominal = masterSchedule[date];
-    if (nominal && remaining[nominal] && !unavailSet[nominal].has(date) && !boundaryBlocked(date, nominal)) {
+    if (nominal && remaining[nominal] && !unavailSet[nominal].has(date) && !boundaryBlocked(date, nominal) && !neighborsOf(date).some(n => assign[n] === nominal)) {
       place(date, nominal, dayType(date, holidaySet));
     }
   });
@@ -2199,7 +2207,14 @@ export default function App() {
     setCurrentScheduleGenerated(true);
     setScheduleStale(false);
     setScheduleOverrides({});
-    await saveMonth({ currentSchedule: next, scheduleViolations: violationList, currentScheduleGenerated: true, scheduleStale: false, scheduleOverrides: {} });
+    // A freshly generated schedule makes any earlier manual-edit tracking
+    // moot regardless of whether "ล้างตารางเวร" ran first — resetting it
+    // here too (not just there) also closes a real race: clicking "clear"
+    // then "จัดเวร" in quick succession could otherwise let this save's
+    // fresh-read land before the clear's write finished, silently
+    // reintroducing the old flags/count through the merge.
+    setManualEditFlags(null);
+    await saveMonth({ currentSchedule: next, scheduleViolations: violationList, currentScheduleGenerated: true, scheduleStale: false, scheduleOverrides: {}, manualEditFlags: null, imageSaveCount: 0 });
     const msg = `จัดเวรตารางเวรสำหรับเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว${violationList.length ? ` (มี ${violationList.length} วันที่จัดให้ตรงเงื่อนไขไม่ได้แม้ลองสลับเวรหลายคู่แล้ว — เจ้าของเวรเดิมต้องอยู่แทน)` : ''}`;
     await addNotification(msg, `🔀 ${msg}`);
     showToast('จัดเวรเรียบร้อย');
@@ -2296,13 +2311,16 @@ export default function App() {
       });
       const violationList = [...violations].sort();
 
-      await setMonthData(mk, { ...raw, currentSchedule: nextSchedule, scheduleViolations: violationList, currentScheduleGenerated: true, scheduleStale: false, scheduleOverrides: {} });
+      // Same "fresh schedule makes old manual-edit tracking moot" reset as
+      // the single-month generator — see generateCurrentSchedule.
+      await setMonthData(mk, { ...raw, currentSchedule: nextSchedule, scheduleViolations: violationList, currentScheduleGenerated: true, scheduleStale: false, scheduleOverrides: {}, manualEditFlags: null, imageSaveCount: 0 });
       if (y === year && m === month) {
         setCurrentSchedule(nextSchedule);
         setScheduleViolations(violationList);
         setCurrentScheduleGenerated(true);
         setScheduleStale(false);
         setScheduleOverrides({});
+        setManualEditFlags(null);
       }
 
       // buildCurrentSchedule only tracks debt for doctors active THIS month —
