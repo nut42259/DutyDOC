@@ -2328,7 +2328,12 @@ export default function App() {
     setScheduleViolations([]);
     setScheduleStale(false);
     setScheduleOverrides({});
-    await saveMonth({ currentSchedule: {}, currentScheduleGenerated: false, scheduleViolations: [], scheduleStale: false, scheduleOverrides: {} });
+    // A cleared schedule is a genuine fresh start — the save counter and the
+    // yellow-bar "since last save" tracking reset along with it, rather than
+    // carrying over counts/flags that refer to a schedule that no longer
+    // exists.
+    setManualEditFlags(null);
+    await saveMonth({ currentSchedule: {}, currentScheduleGenerated: false, scheduleViolations: [], scheduleStale: false, scheduleOverrides: {}, manualEditFlags: null, imageSaveCount: 0 });
     await addNotification(
       `ล้างตารางเวรของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว (ต้องกดจัดเวรใหม่)`,
       `🗑️ ล้างตารางเวรของเดือน ${THAI_MONTHS[month]} ${year + 543} แล้ว`
