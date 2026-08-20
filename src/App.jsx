@@ -1008,12 +1008,19 @@ const QUEUE_LOOP_LABELS = { weekday: 'วันธรรมดา', h12: 'วั
 // name appearing twice (ณัชพล, ณัฐพล, ณัฐธิดา, ขนิษฐา) — every occurrence of
 // those must be labeled 1/2 everywhere this loop is shown, never left
 // ambiguous.
+// Derived from the SAME arrays MasterScheduleGenerator uses to actually
+// generate schedules (DEFAULT_WDQ_NAMES/H12Q/H3Q), not hand-retyped copies —
+// so if the department's real rotation ever changes, this reference can't
+// silently drift out of sync with it. h12's display starts one slot later
+// than DEFAULT_H12Q_NAMES (rotated so it reads starting right after the
+// original pointer's initial anchor) — verified byte-identical to the
+// previous hardcoded text.
 const LOOP_BASE_ORDER = {
-  weekday: ['อารีรัตน์','ชุติมา','กนกอร','ธัญลักษณ์','วัทนี','ธนวรรณ','ณัชพล','สมิตา','พสิษฐา','ณัฐธิดา','ขนิษฐา','ณัฐพล'],
-  h12: ['ชุติมา','ณัชพล','ณัฐพล','กนกอร','ธัญลักษณ์','ณัฐธิดา','ขนิษฐา','ธนวรรณ','ณัชพล','ณัฐพล','วัทนี','สมิตา','ณัฐธิดา','ขนิษฐา','พสิษฐา'],
-  h3: ['ชุติมา','กนกอร','ธัญลักษณ์','วัทนี','ธนวรรณ','ณัชพล','สมิตา','พสิษฐา','ณัฐธิดา','ขนิษฐา','ณัฐพล'],
-  h4: ['ชุติมา','กนกอร','ธัญลักษณ์','วัทนี','ธนวรรณ','ณัชพล','สมิตา','พสิษฐา','ณัฐธิดา','ขนิษฐา','ณัฐพล'],
-  h5: ['ชุติมา','กนกอร','ธัญลักษณ์','วัทนี','ธนวรรณ','ณัชพล','สมิตา','พสิษฐา','ณัฐธิดา','ขนิษฐา','ณัฐพล'],
+  weekday: DEFAULT_WDQ_NAMES,
+  h12: [...DEFAULT_H12Q_NAMES.slice(1), DEFAULT_H12Q_NAMES[0]],
+  h3: DEFAULT_H3Q_NAMES,
+  h4: DEFAULT_H3Q_NAMES,
+  h5: DEFAULT_H3Q_NAMES,
 };
 
 // "ชื่อ" if unique in the loop, "ชื่อ1"/"ชื่อ2" if it appears twice (h12 only).
@@ -1116,10 +1123,7 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
   // streak crossing a month boundary (e.g. 31 Dec – 3 Jan) is classified as
   // one continuous group using its true length, matching how it was
   // actually generated (see MasterScheduleGenerator's detectGroups).
-  const isHolidayDate = (date) => {
-    const dow = new Date(date + 'T00:00:00').getDay();
-    return dow === 0 || dow === 6 || holidaySetAll.has(date);
-  };
+  const isHolidayDate = (date) => dayType(date, holidaySetAll) === 'holiday';
 
   const datesByType = classifyMonthDates(year, month, isHolidayDate);
 
@@ -1188,10 +1192,7 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
     // real dependency is `holidays` itself, not a function reference that's
     // new every render.
     const holidaySet = new Set(holidays);
-    const isHoliday = (date) => {
-      const dow = new Date(date + 'T00:00:00').getDay();
-      return dow === 0 || dow === 6 || holidaySet.has(date);
-    };
+    const isHoliday = (date) => dayType(date, holidaySet) === 'holiday';
     (async () => {
       const found = {};
       const remaining = new Set(['weekday', 'h12', 'h3', 'h4', 'h5']);
@@ -1245,7 +1246,13 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
       <div>
         {['weekday', 'h12', 'h3', 'h4', 'h5'].map((key, idx) => {
           const tm = thisMonth[key];
-          const lr = lastReal ? (lastReal[key] || KNOWN_LOOP_HISTORY[key] || null) : undefined; // undefined = still loading
+          // Only fall back to a seeded known fact if the viewed month is
+          // actually AFTER it — otherwise a month before the seeded date
+          // would show it as "ล่าสุดจบที่" (last completed), which is
+          // impossible: the event hasn't happened yet relative to that view.
+          const known = KNOWN_LOOP_HISTORY[key];
+          const knownApplies = known && isoDate(year, month, 1) > known.date;
+          const lr = lastReal ? (lastReal[key] || (knownApplies ? known : null)) : undefined; // undefined = still loading
           const loaded = lastReal !== null && nextMonthMaster !== undefined;
 
           // Resolve every real name's exact array index by walking the whole
@@ -1274,9 +1281,15 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
           // historical scan to finish before deciding.
           const lastShownName = tm ? tmNames[tmNames.length - 1] : (lr ? lr.name : null);
           const lastShownIdx = tm ? dnIdx : lrIdx;
+          // If the chain genuinely couldn't resolve an index (e.g. the only
+          // real data point is itself a duplicate name with no anchor
+          // anywhere in the chain), fall back to the first occurrence rather
+          // than letting the whole "เดือนต่อไปเริ่มที่" box silently vanish —
+          // an approximate answer beats no answer at all.
+          const bestEffortIdx = lastShownIdx != null ? lastShownIdx : (lastShownName ? LOOP_BASE_ORDER[key].indexOf(lastShownName) : -1);
           const real = loaded ? nextMonthReal[key] : null;
           const nextRealIdx = real ? nearestForward(key, real.name, lastShownIdx) : null;
-          const fallbackNextIdx = (loaded && !real && lastShownIdx != null) ? (lastShownIdx + 1) % LOOP_BASE_ORDER[key].length : null;
+          const fallbackNextIdx = (loaded && !real && bestEffortIdx !== -1) ? (bestEffortIdx + 1) % LOOP_BASE_ORDER[key].length : null;
           const nextLabel = real ? label(real.name, nextRealIdx) : (fallbackNextIdx != null ? occurrenceLabelAt(key, fallbackNextIdx) : null);
           const nextDate = real ? real.date : (fallbackNextIdx != null ? firstDateNextMonth(key) : null);
 
@@ -1292,7 +1305,7 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
                 ) : (
                   <span className="text-[11px] text-slate-400 italic">ยังไม่มีประวัติ</span>
                 )}
-                {tm && (
+                {tm && lastReal !== null && (
                   <>
                     <span className="text-slate-300 text-sm mb-2">→</span>
                     <Box label="เดือนนี้เริ่มที่" name={tmFirstLabel} date={tm.firstDate} />
@@ -1680,13 +1693,20 @@ export default function App() {
       // { head: "นพ.ณัชพล", surname: "ทวีสกุลชัย" } — split on the LAST
       // space, since every DOCTOR_FULL_NAME entry is "prefix+firstname
       // surname" with exactly one space there.
+      // Tracks any doctor this export couldn't render properly — deleted
+      // from the roster since the date was assigned, or missing from
+      // DOCTOR_FULL_NAME (e.g. a newly-added doctor) — so the admin gets a
+      // warning instead of an official document silently missing names.
+      const nameIssues = new Set();
       const nameOf = (docId) => {
         if (!docId) return null;
         const doc = doctors.find(d => d.id === docId);
-        if (!doc) return null;
-        const full = DOCTOR_FULL_NAME[doc.name] || doc.name;
-        const idx = full.lastIndexOf(' ');
-        return idx === -1 ? { head: full, surname: '' } : { head: full.slice(0, idx), surname: full.slice(idx + 1) };
+        if (!doc) { nameIssues.add('พบวันที่มีแพทย์ที่ถูกลบออกจากระบบไปแล้ว'); return null; }
+        const full = DOCTOR_FULL_NAME[doc.name];
+        if (!full) nameIssues.add(`ไม่มีชื่อเต็ม/นามสกุลของ "${doc.name}" ในระบบ — ตรวจสอบชื่อในเอกสารก่อนใช้งาน`);
+        const resolved = full || doc.name;
+        const idx = resolved.lastIndexOf(' ');
+        return idx === -1 ? { head: resolved, surname: '' } : { head: resolved.slice(0, idx), surname: resolved.slice(idx + 1) };
       };
 
       const run = (text, opts = {}) => new TextRun({ text, font: DOC_FONT, size: opts.size ?? TABLE_SIZE, bold: !!opts.bold });
@@ -1808,7 +1828,11 @@ export default function App() {
       link.download = `เวรแพทย์กลุ่มงานกุมารเวชกรรม ประจำเดือน${THAI_MONTHS[month]}${year + 543}.docx`;
       link.click();
       URL.revokeObjectURL(link.href);
-      showToast('บันทึกไฟล์ DOCX เรียบร้อย');
+      if (nameIssues.size > 0) {
+        showToast(`บันทึกไฟล์ DOCX แล้ว แต่พบปัญหา: ${[...nameIssues].join(' / ')}`, 8000);
+      } else {
+        showToast('บันทึกไฟล์ DOCX เรียบร้อย');
+      }
     } catch (err) {
       console.error(err);
       showToast('สร้างไฟล์ DOCX ไม่สำเร็จ ลองอีกครั้ง');
@@ -1818,7 +1842,7 @@ export default function App() {
   };
 
   const holidaySet = new Set(holidays);
-  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2500); };
+  const showToast = (msg, duration = 2500) => { setToast(msg); setTimeout(() => setToast(null), duration); };
   const activeDoctors = activeDoctorIds === null ? doctors : doctors.filter(d => activeDoctorIds.includes(d.id));
 
   // The current schedule is intentionally NOT auto-recomputed in the
