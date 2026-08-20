@@ -1141,10 +1141,19 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
   // lists, the ชุติมา 2027+ rotation exclusion — all apply automatically,
   // because it's the real algorithm, not a guess — while staying immune to
   // any manual edit made to a saved schedule after the fact, since it never
-  // reads masterOriginal for months it simulates. Walks forward past the
-  // immediate next month (carrying qp/debt through each simulated month)
-  // for any loop type with no qualifying date there yet (h3/h4/h5 don't
-  // occur every month), bounded to 24 simulated months.
+  // reads masterOriginal for months it simulates.
+  //
+  // Phase 1: search forward through REAL data, month by month, for each
+  // type's first occurrence — a type not occurring in the IMMEDIATE next
+  // month (h3/h4/h5 don't happen every month) doesn't mean no real data
+  // exists at all; it might simply be a few months further out, and that
+  // real month must be checked before ever falling back to simulation
+  // (checking only the immediate next month and simulating everything
+  // past it produced a wrong answer whenever a later month already had
+  // real data the simulation didn't know to defer to). Stops as soon as a
+  // month has NO real quota at all — the frontier, since months are always
+  // generated in order, so nothing past it can have real data either.
+  // Phase 2: simulate forward from that frontier for whatever's left.
   const [nextResult, setNextResult] = useState(undefined); // undefined = loading
   useEffect(() => {
     let cancelled = false;
@@ -1155,20 +1164,22 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
       const found = {};
       const remaining = new Set(['weekday', 'h12', 'h3', 'h4', 'h5']);
 
-      const nextData = await getMonthData(monthKey(nextCalMonth.y, nextCalMonth.m));
-      if (cancelled) return;
-      const nextRealMaster = nextData ? (nextData.masterOriginal || nextData.masterSchedule || nextData.schedule || {}) : null;
-      const nextHasRealData = nextRealMaster && Object.keys(nextRealMaster).length > 0;
-      if (nextHasRealData) {
-        const dbt = classifyMonthDates(nextCalMonth.y, nextCalMonth.m, isHoliday);
+      let y = nextCalMonth.y, m = nextCalMonth.m;
+      for (let i = 0; i < 24 && remaining.size > 0 && !cancelled; i++) {
+        const monthData = await getMonthData(monthKey(y, m));
+        if (cancelled) return;
+        const master = monthData ? (monthData.masterOriginal || monthData.masterSchedule || monthData.schedule || {}) : {};
+        if (Object.keys(master).length === 0) break; // frontier — simulation starts here
+        const dbt = classifyMonthDates(y, m, isHoliday);
         remaining.forEach(key => {
-          const dates = dbt[key].filter(d => nextRealMaster[d]).sort();
-          if (dates.length > 0) found[key] = { date: dates[0], name: doctors.find(d => d.id === nextRealMaster[dates[0]])?.name ?? '?' };
+          const dates = dbt[key].filter(d => master[d]).sort();
+          if (dates.length > 0) found[key] = { date: dates[0], name: doctors.find(d => d.id === master[dates[0]])?.name ?? '?' };
         });
         [...remaining].forEach(key => { if (found[key]) remaining.delete(key); });
+        m += 1; if (m > 11) { m = 0; y += 1; }
       }
 
-      if (remaining.size > 0) {
+      if (remaining.size > 0 && !cancelled) {
         const qs = await getQueueState();
         if (cancelled) return;
         const WDQ = resolveQueue(qs.WDQ ?? DEFAULT_WDQ_NAMES, doctors);
@@ -1176,8 +1187,6 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
         const H3Q = resolveQueue(qs.H3Q ?? DEFAULT_H3Q_NAMES, doctors);
         let qp = { weekday: qs.weekday, h12: qs.h12, h3: qs.h3, h4: qs.h4, h5: qs.h5 };
         let debt = JSON.parse(JSON.stringify(qs.debt || {}));
-        let y = nextCalMonth.y, m = nextCalMonth.m;
-        if (nextHasRealData) { m += 1; if (m > 11) { m = 0; y += 1; } }
         for (let i = 0; i < 24 && remaining.size > 0 && !cancelled; i++) {
           const monthData = await getMonthData(monthKey(y, m));
           const activeIds = monthData && monthData.activeDoctorIds !== undefined ? monthData.activeDoctorIds : null;
