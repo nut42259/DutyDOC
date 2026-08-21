@@ -24,6 +24,25 @@ export async function setMonthData(monthKey, payload) {
     .upsert({ month_key: monthKey, data: payload, updated_at: new Date().toISOString() }, { onConflict: 'month_key' });
 }
 
+// month_key sorts lexically the same as chronologically ("month-YYYY-MM"),
+// so the newest key with a non-empty masterSchedule is the most recently
+// quota-generated month — used to pick a sane default landing month on
+// login instead of always trusting the device's real-world clock.
+export async function getLatestQuotaMonth() {
+  const { data } = await supabase
+    .from('month_data')
+    .select('month_key, data')
+    .order('month_key', { ascending: false });
+  for (const row of data || []) {
+    const ms = row.data?.masterSchedule;
+    if (ms && Object.values(ms).some(Boolean)) {
+      const m = row.month_key.match(/^month-(\d+)-(\d+)$/);
+      if (m) return { year: Number(m[1]), month: Number(m[2]) - 1 };
+    }
+  }
+  return null;
+}
+
 // ---------- marketplace ----------
 // Stored as a single row in config table (key='marketplace') to avoid
 // jsonb-path upsert issues with the marketplace table.

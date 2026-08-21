@@ -9,7 +9,7 @@ import {
   getMarketplace, setMarketplace,
   getNotifications, addNotification as dbAddNotification,
   getDoctors, addDoctor, updateDoctor, deleteDoctor,
-  getQueueState, setQueueState,
+  getQueueState, setQueueState, getLatestQuotaMonth,
 } from './storage';
 import LoginScreen from './LoginScreen';
 import MasterScheduleGenerator, { detectGroups, ltFor, resolveQueue, generateSchedule, buildDefaultAvail, DEFAULT_WDQ_NAMES, DEFAULT_H12Q_NAMES, DEFAULT_H3Q_NAMES } from './MasterScheduleGenerator';
@@ -1236,17 +1236,31 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
           debt = result.remainingDebt;
           m += 1; if (m > 11) { m = 0; y += 1; }
         }
+        // Whoever's left after 24 simulated months (h3/h4/h5 need an actual
+        // long holiday streak to fire, and the holiday calendar is only
+        // ever filled in a handful of months ahead — a real streak that far
+        // out simply isn't knowable yet) still HAS a real answer: the queue
+        // never stopped remembering their turn just because no eligible
+        // month showed up to consume it. Report that name with no date
+        // (uncertain: true) instead of silently omitting the box, which
+        // reads as data having vanished rather than "not due yet."
+        const queueMap = { weekday: WDQ, h12: H12Q, h3: H3Q, h4: H3Q, h5: H3Q };
+        remaining.forEach(key => {
+          const q = queueMap[key];
+          const id = q[qp[key] % q.length];
+          found[key] = { date: null, name: doctors.find(d => d.id === id)?.name ?? '?', uncertain: true };
+        });
       }
       if (!cancelled) setNextResult(found);
     })();
     return () => { cancelled = true; };
   }, [year, month, doctors, holidays]);
 
-  const Box = ({ label, name, date, muted }) => (
+  const Box = ({ label, name, date, muted, note }) => (
     <div className="flex flex-col items-start gap-0.5">
       <span className="text-[9px] font-semibold tracking-wide text-slate-400 uppercase">{label}</span>
       <span className={`rounded-md px-2.5 py-1 text-xs font-semibold text-slate-800 ${muted ? 'border border-dashed border-slate-300' : 'border border-slate-700'}`}>{name}</span>
-      <span className="text-[9.5px] text-slate-400">{date ? formatDisplayDate(date) : ''}</span>
+      <span className="text-[9.5px] text-slate-400">{note || (date ? formatDisplayDate(date) : '')}</span>
     </div>
   );
 
@@ -1304,7 +1318,12 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
                 {nextLabel && (
                   <>
                     <span className="text-slate-300 text-sm mb-2">→</span>
-                    <Box label="เดือนต่อไปเริ่มที่" name={nextLabel} date={nextDate} />
+                    <Box
+                      label={next.uncertain ? 'คิวถัดไป (ยังไม่ถึงรอบ)' : 'เดือนต่อไปเริ่มที่'}
+                      name={nextLabel}
+                      date={nextDate}
+                      note={next.uncertain ? 'รอวันหยุดยาวจริงในปฏิทิน' : undefined}
+                    />
                   </>
                 )}
               </div>
@@ -1545,6 +1564,20 @@ export default function App() {
 
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth());
+
+  // On login, jump to whichever month was most recently quota-generated
+  // instead of trusting the device's real-world clock — an admin working
+  // ahead of the calendar (or behind it) otherwise lands on a month with
+  // nothing to look at. Only runs once per login, and only overrides the
+  // clock-based default if a quota-generated month actually exists.
+  const jumpedToLatestQuotaMonth = useRef(false);
+  useEffect(() => {
+    if (!currentUser || jumpedToLatestQuotaMonth.current) return;
+    jumpedToLatestQuotaMonth.current = true;
+    getLatestQuotaMonth().then(latest => {
+      if (latest) { setYear(latest.year); setMonth(latest.month); }
+    });
+  }, [currentUser]);
 
   const [doctors, setDoctors] = useState([]);
   const [holidays, setHolidays] = useState([]);
