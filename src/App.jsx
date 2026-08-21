@@ -1159,6 +1159,29 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
           [...remaining].forEach(key => { if (found[key]) remaining.delete(key); });
         }
       }
+      // Whatever's still unresolved after 36 months of saved data predates
+      // this app's own records (the earliest saved month is well short of
+      // 36 months back for a rare loop like h5) — but the queue itself
+      // still remembers: queueState.lastDate[key] + "whoever sits one slot
+      // before the current pointer" is exactly who last held that loop's
+      // turn, even with no month_data row to read it back from.
+      if (remaining.size > 0 && !cancelled) {
+        const qs = await getQueueState();
+        if (cancelled) return;
+        const WDQ = resolveQueue(qs.WDQ ?? DEFAULT_WDQ_NAMES, doctors);
+        const H12Q = resolveQueue(qs.H12Q ?? DEFAULT_H12Q_NAMES, doctors);
+        const H3Q = resolveQueue(qs.H3Q ?? DEFAULT_H3Q_NAMES, doctors);
+        const queueMap = { weekday: WDQ, h12: H12Q, h3: H3Q, h4: H3Q, h5: H3Q };
+        remaining.forEach(key => {
+          const lastDateStr = qs.lastDate?.[key];
+          if (!lastDateStr) return;
+          const q = queueMap[key];
+          const ptr = qs[key];
+          const lastIdx = ((ptr - 1) % q.length + q.length) % q.length;
+          const id = q[lastIdx];
+          found[key] = { date: lastDateStr, name: doctors.find(d => d.id === id)?.name ?? '?' };
+        });
+      }
       if (!cancelled) setLastReal(found);
     })();
     return () => { cancelled = true; };
