@@ -52,19 +52,22 @@ const DUTY_ROSTER_HEAD_TITLE = 'หัวหน้ากลุ่มงานก
 // hand-picked set still had a closest pair (indigo/violet) at Delta-E 14.4 —
 // visibly too close, which is exactly what got reported (ณัฐธิดา/ขนิษฐา).
 // This set's closest pair is Delta-E 27.2, roughly double.
+// 12 hues spaced ~28-30deg apart (plus one neutral) so no two doctors read
+// as "basically the same color" the way the old orange/yellow/lime and
+// fuchsia/pink/rose neighbors did at a glance.
 const DOCTOR_PALETTE = [
-  { bg: 'bg-orange-600', soft: 'bg-orange-50', text: 'text-orange-700', ring: 'ring-orange-500' },
-  { bg: 'bg-yellow-600', soft: 'bg-yellow-50', text: 'text-yellow-700', ring: 'ring-yellow-500' },
-  { bg: 'bg-lime-600', soft: 'bg-lime-50', text: 'text-lime-700', ring: 'ring-lime-500' },
-  { bg: 'bg-green-600', soft: 'bg-green-50', text: 'text-green-700', ring: 'ring-green-500' },
-  { bg: 'bg-teal-600', soft: 'bg-teal-50', text: 'text-teal-700', ring: 'ring-teal-500' },
-  { bg: 'bg-sky-600', soft: 'bg-sky-50', text: 'text-sky-700', ring: 'ring-sky-500' },
-  { bg: 'bg-blue-600', soft: 'bg-blue-50', text: 'text-blue-700', ring: 'ring-blue-500' },
-  { bg: 'bg-violet-600', soft: 'bg-violet-50', text: 'text-violet-700', ring: 'ring-violet-500' },
-  { bg: 'bg-fuchsia-600', soft: 'bg-fuchsia-50', text: 'text-fuchsia-700', ring: 'ring-fuchsia-500' },
-  { bg: 'bg-pink-600', soft: 'bg-pink-50', text: 'text-pink-700', ring: 'ring-pink-500' },
-  { bg: 'bg-rose-600', soft: 'bg-rose-50', text: 'text-rose-700', ring: 'ring-rose-500' },
-  { bg: 'bg-slate-700', soft: 'bg-slate-100', text: 'text-slate-700', ring: 'ring-slate-500' },
+  { bg: 'bg-[oklch(42%_0.16_25)]',  soft: 'bg-[oklch(95%_0.05_25)]',  text: 'text-[oklch(42%_0.16_25)]',  ring: 'ring-[oklch(42%_0.16_25)]' },
+  { bg: 'bg-[oklch(40%_0.14_60)]',  soft: 'bg-[oklch(95%_0.05_60)]',  text: 'text-[oklch(40%_0.14_60)]',  ring: 'ring-[oklch(40%_0.14_60)]' },
+  { bg: 'bg-[oklch(38%_0.13_100)]', soft: 'bg-[oklch(95%_0.05_100)]', text: 'text-[oklch(38%_0.13_100)]', ring: 'ring-[oklch(38%_0.13_100)]' },
+  { bg: 'bg-[oklch(38%_0.13_142)]', soft: 'bg-[oklch(95%_0.05_142)]', text: 'text-[oklch(38%_0.13_142)]', ring: 'ring-[oklch(38%_0.13_142)]' },
+  { bg: 'bg-[oklch(38%_0.11_178)]', soft: 'bg-[oklch(95%_0.05_178)]', text: 'text-[oklch(38%_0.11_178)]', ring: 'ring-[oklch(38%_0.11_178)]' },
+  { bg: 'bg-[oklch(40%_0.11_208)]', soft: 'bg-[oklch(95%_0.04_208)]', text: 'text-[oklch(40%_0.11_208)]', ring: 'ring-[oklch(40%_0.11_208)]' },
+  { bg: 'bg-[oklch(42%_0.14_240)]', soft: 'bg-[oklch(95%_0.04_240)]', text: 'text-[oklch(42%_0.14_240)]', ring: 'ring-[oklch(42%_0.14_240)]' },
+  { bg: 'bg-[oklch(42%_0.15_268)]', soft: 'bg-[oklch(95%_0.05_268)]', text: 'text-[oklch(42%_0.15_268)]', ring: 'ring-[oklch(42%_0.15_268)]' },
+  { bg: 'bg-[oklch(42%_0.16_296)]', soft: 'bg-[oklch(95%_0.05_296)]', text: 'text-[oklch(42%_0.16_296)]', ring: 'ring-[oklch(42%_0.16_296)]' },
+  { bg: 'bg-[oklch(44%_0.17_322)]', soft: 'bg-[oklch(95%_0.05_322)]', text: 'text-[oklch(44%_0.17_322)]', ring: 'ring-[oklch(44%_0.17_322)]' },
+  { bg: 'bg-[oklch(44%_0.16_350)]', soft: 'bg-[oklch(95%_0.05_350)]', text: 'text-[oklch(44%_0.16_350)]', ring: 'ring-[oklch(44%_0.16_350)]' },
+  { bg: 'bg-[oklch(38%_0.02_260)]', soft: 'bg-[oklch(94%_0.01_260)]', text: 'text-[oklch(38%_0.02_260)]', ring: 'ring-[oklch(38%_0.02_260)]' },
 ];
 const getDoctorColor = (idx) => DOCTOR_PALETTE[idx % DOCTOR_PALETTE.length];
 
@@ -1502,7 +1505,7 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
           return (
             <div
               key={date}
-              className={`relative rounded-lg border p-1.5 min-h-[64px] min-w-0 flex flex-col gap-1 ${type === 'holiday' ? 'bg-rose-100 border-rose-200' : 'bg-white border-slate-200'} ${manuallyFlagged ? 'border-l-4 border-l-amber-400' : ''} ${isMine ? `ring-2 ring-offset-1 ${color.ring}` : ''} ${editable ? 'cursor-pointer hover:border-teal-300' : ''}`}
+              className={`relative rounded-lg border p-1.5 min-h-[76px] min-w-0 flex flex-col gap-1 ${type === 'holiday' ? 'bg-rose-100 border-rose-200' : 'bg-white border-slate-200'} ${manuallyFlagged ? 'border-l-4 border-l-amber-400' : ''} ${isMine ? `ring-2 ring-offset-1 ${color.ring}` : ''} ${editable ? 'cursor-pointer hover:border-teal-300' : ''}`}
               onClick={() => editable && setEditingDate(date)}
               title={titleParts.join(' · ')}
             >
@@ -1556,7 +1559,7 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                 // ratio math html2canvas was getting wrong.
                 <div className="flex flex-col gap-0.5 min-w-0">
                   <span
-                    className={`block w-full text-center leading-[16px] sm:leading-[24px] font-body font-semibold rounded-md px-1 py-2 whitespace-nowrap text-[9px] sm:text-[14px] ${color.soft} ${color.text}`}
+                    className={`block w-full text-center leading-[18px] sm:leading-[28px] font-body font-bold rounded-md px-1 py-3 whitespace-nowrap text-[10px] sm:text-[16px] ${color.soft} ${color.text}`}
                   >{doc.name}</span>
                   {traded && (
                     <span className="block w-full text-center leading-[12px] sm:leading-[17px] font-body text-slate-400 line-through whitespace-nowrap px-1 text-[7px] sm:text-[10px]">{getDoctor(origId)?.name || '-'}</span>
