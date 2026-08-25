@@ -1,3 +1,16 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* IBM Plex Sans Thai covers Thai glyphs that Space Grotesk/Inter don't —
+   without it, Thai text silently falls back to whatever Thai font (if
+   any) the visitor's OS happens to ship, which varies a lot. Listed as
+   the fallback ahead of generic sans-serif so Thai renders consistently
+   everywhere this app is opened, including the login screen (which
+   renders before App's own font classes exist). */
+body { font-family: 'Inter', 'IBM Plex Sans Thai', sans-serif; }
+.font-display { font-family: 'Space Grotesk', 'IBM Plex Sans Thai', sans-serif; }
+.font-body { font-family: 'Inter', 'IBM Plex Sans Thai', sans-serif; }
+.font-mono { font-family: 'IBM Plex Mono', monospace; }

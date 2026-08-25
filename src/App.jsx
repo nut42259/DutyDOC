@@ -52,22 +52,34 @@ const DUTY_ROSTER_HEAD_TITLE = 'หัวหน้ากลุ่มงานก
 // hand-picked set still had a closest pair (indigo/violet) at Delta-E 14.4 —
 // visibly too close, which is exactly what got reported (ณัฐธิดา/ขนิษฐา).
 // This set's closest pair is Delta-E 27.2, roughly double.
-// 12 hues spaced ~28-30deg apart (plus one neutral) so no two doctors read
-// as "basically the same color" the way the old orange/yellow/lime and
-// fuchsia/pink/rose neighbors did at a glance.
+// Colors are assigned to DOCTOR ARRAY POSITION, not hue order — so simply
+// stepping hue by ~30deg per array slot isn't enough: whichever doctors
+// happen to sit at consecutive array indices (an accident of insertion
+// order, unrelated to how similar their colors should look) end up with
+// adjacent hues too. That's exactly what happened before — three doctors
+// who happen to be consecutive in the doctors array all landed in the
+// same 90deg cyan/blue/indigo arc and read as "the same blue" at a
+// glance, even though the 12 hues overall were evenly spread.
+//
+// Fixed by picking hues in "every 5th slot around a 12-hue wheel" order
+// (30deg * ((5*i) mod 12) for palette slot i) before assigning them to
+// doctor array positions in order — a standard trick (step coprime with
+// the wheel size) that guarantees any run of consecutive array indices
+// gets hues ~150deg apart instead of ~30deg apart, so adjacent doctors
+// in the roster never land in the same color family.
 const DOCTOR_PALETTE = [
-  { bg: 'bg-[oklch(42%_0.16_25)]',  soft: 'bg-[oklch(95%_0.05_25)]',  text: 'text-[oklch(42%_0.16_25)]',  ring: 'ring-[oklch(42%_0.16_25)]' },
-  { bg: 'bg-[oklch(40%_0.14_60)]',  soft: 'bg-[oklch(95%_0.05_60)]',  text: 'text-[oklch(40%_0.14_60)]',  ring: 'ring-[oklch(40%_0.14_60)]' },
-  { bg: 'bg-[oklch(38%_0.13_100)]', soft: 'bg-[oklch(95%_0.05_100)]', text: 'text-[oklch(38%_0.13_100)]', ring: 'ring-[oklch(38%_0.13_100)]' },
-  { bg: 'bg-[oklch(38%_0.13_142)]', soft: 'bg-[oklch(95%_0.05_142)]', text: 'text-[oklch(38%_0.13_142)]', ring: 'ring-[oklch(38%_0.13_142)]' },
-  { bg: 'bg-[oklch(38%_0.11_178)]', soft: 'bg-[oklch(95%_0.05_178)]', text: 'text-[oklch(38%_0.11_178)]', ring: 'ring-[oklch(38%_0.11_178)]' },
-  { bg: 'bg-[oklch(40%_0.11_208)]', soft: 'bg-[oklch(95%_0.04_208)]', text: 'text-[oklch(40%_0.11_208)]', ring: 'ring-[oklch(40%_0.11_208)]' },
-  { bg: 'bg-[oklch(42%_0.14_240)]', soft: 'bg-[oklch(95%_0.04_240)]', text: 'text-[oklch(42%_0.14_240)]', ring: 'ring-[oklch(42%_0.14_240)]' },
-  { bg: 'bg-[oklch(42%_0.15_268)]', soft: 'bg-[oklch(95%_0.05_268)]', text: 'text-[oklch(42%_0.15_268)]', ring: 'ring-[oklch(42%_0.15_268)]' },
-  { bg: 'bg-[oklch(42%_0.16_296)]', soft: 'bg-[oklch(95%_0.05_296)]', text: 'text-[oklch(42%_0.16_296)]', ring: 'ring-[oklch(42%_0.16_296)]' },
-  { bg: 'bg-[oklch(44%_0.17_322)]', soft: 'bg-[oklch(95%_0.05_322)]', text: 'text-[oklch(44%_0.17_322)]', ring: 'ring-[oklch(44%_0.17_322)]' },
-  { bg: 'bg-[oklch(44%_0.16_350)]', soft: 'bg-[oklch(95%_0.05_350)]', text: 'text-[oklch(44%_0.16_350)]', ring: 'ring-[oklch(44%_0.16_350)]' },
-  { bg: 'bg-[oklch(38%_0.02_260)]', soft: 'bg-[oklch(94%_0.01_260)]', text: 'text-[oklch(38%_0.02_260)]', ring: 'ring-[oklch(38%_0.02_260)]' },
+  { bg: 'bg-[oklch(42%_0.16_25)]',  soft: 'bg-[oklch(95%_0.05_25)]',  text: 'text-[oklch(42%_0.16_25)]',  ring: 'ring-[oklch(42%_0.16_25)]' },  // coral
+  { bg: 'bg-[oklch(40%_0.11_208)]', soft: 'bg-[oklch(95%_0.04_208)]', text: 'text-[oklch(40%_0.11_208)]', ring: 'ring-[oklch(40%_0.11_208)]' }, // cyan-blue
+  { bg: 'bg-[oklch(44%_0.16_350)]', soft: 'bg-[oklch(95%_0.05_350)]', text: 'text-[oklch(44%_0.16_350)]', ring: 'ring-[oklch(44%_0.16_350)]' }, // rose
+  { bg: 'bg-[oklch(38%_0.13_142)]', soft: 'bg-[oklch(95%_0.05_142)]', text: 'text-[oklch(38%_0.13_142)]', ring: 'ring-[oklch(38%_0.13_142)]' }, // green
+  { bg: 'bg-[oklch(42%_0.16_296)]', soft: 'bg-[oklch(95%_0.05_296)]', text: 'text-[oklch(42%_0.16_296)]', ring: 'ring-[oklch(42%_0.16_296)]' }, // violet
+  { bg: 'bg-[oklch(40%_0.14_60)]',  soft: 'bg-[oklch(95%_0.05_60)]',  text: 'text-[oklch(40%_0.14_60)]',  ring: 'ring-[oklch(40%_0.14_60)]' },  // amber
+  { bg: 'bg-[oklch(42%_0.14_240)]', soft: 'bg-[oklch(95%_0.04_240)]', text: 'text-[oklch(42%_0.14_240)]', ring: 'ring-[oklch(42%_0.14_240)]' }, // blue
+  { bg: 'bg-[oklch(38%_0.02_260)]', soft: 'bg-[oklch(94%_0.01_260)]', text: 'text-[oklch(38%_0.02_260)]', ring: 'ring-[oklch(38%_0.02_260)]' },  // neutral slate
+  { bg: 'bg-[oklch(38%_0.11_178)]', soft: 'bg-[oklch(95%_0.05_178)]', text: 'text-[oklch(38%_0.11_178)]', ring: 'ring-[oklch(38%_0.11_178)]' }, // teal
+  { bg: 'bg-[oklch(44%_0.17_322)]', soft: 'bg-[oklch(95%_0.05_322)]', text: 'text-[oklch(44%_0.17_322)]', ring: 'ring-[oklch(44%_0.17_322)]' }, // magenta
+  { bg: 'bg-[oklch(38%_0.13_100)]', soft: 'bg-[oklch(95%_0.05_100)]', text: 'text-[oklch(38%_0.13_100)]', ring: 'ring-[oklch(38%_0.13_100)]' }, // olive
+  { bg: 'bg-[oklch(42%_0.15_268)]', soft: 'bg-[oklch(95%_0.05_268)]', text: 'text-[oklch(42%_0.15_268)]', ring: 'ring-[oklch(42%_0.15_268)]' }, // indigo
 ];
 const getDoctorColor = (idx) => DOCTOR_PALETTE[idx % DOCTOR_PALETTE.length];
 
@@ -2949,13 +2961,6 @@ export default function App() {
 
   return (
     <div className="font-body bg-slate-50 min-h-[600px] rounded-2xl overflow-hidden border border-slate-200">
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
-        .font-display { font-family: 'Space Grotesk', sans-serif; }
-        .font-body { font-family: 'Inter', sans-serif; }
-        .font-mono { font-family: 'IBM Plex Mono', monospace; }
-      `}</style>
-
       <div className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex flex-wrap items-center gap-3 justify-between">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-teal-600 flex items-center justify-center"><CalendarIcon size={16} className="text-white" /></div>
