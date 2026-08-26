@@ -67,19 +67,26 @@ const DUTY_ROSTER_HEAD_TITLE = 'หัวหน้ากลุ่มงานก
 // the wheel size) that guarantees any run of consecutive array indices
 // gets hues ~150deg apart instead of ~30deg apart, so adjacent doctors
 // in the roster never land in the same color family.
+// `bg`/`ring` are deliberately a BRIGHTER, more saturated tier than `text`
+// (~56-62% lightness vs. ~38-44%) — they're what a tiny legend dot or a
+// selection ring actually is, a small solid daub of color, and at the
+// darker `text` lightness (chosen for legibility as text on the pale
+// `soft` background, not for looking vivid on its own) a small dot reads
+// as dull/muted rather than colorful. `soft`+`text` stay at the darker,
+// pale-background-legible pairing the calendar name pill needs.
 const DOCTOR_PALETTE = [
-  { bg: 'bg-[oklch(42%_0.16_25)]',  soft: 'bg-[oklch(95%_0.05_25)]',  text: 'text-[oklch(42%_0.16_25)]',  ring: 'ring-[oklch(42%_0.16_25)]' },  // coral
-  { bg: 'bg-[oklch(40%_0.11_208)]', soft: 'bg-[oklch(95%_0.04_208)]', text: 'text-[oklch(40%_0.11_208)]', ring: 'ring-[oklch(40%_0.11_208)]' }, // cyan-blue
-  { bg: 'bg-[oklch(44%_0.16_350)]', soft: 'bg-[oklch(95%_0.05_350)]', text: 'text-[oklch(44%_0.16_350)]', ring: 'ring-[oklch(44%_0.16_350)]' }, // rose
-  { bg: 'bg-[oklch(38%_0.13_142)]', soft: 'bg-[oklch(95%_0.05_142)]', text: 'text-[oklch(38%_0.13_142)]', ring: 'ring-[oklch(38%_0.13_142)]' }, // green
-  { bg: 'bg-[oklch(42%_0.16_296)]', soft: 'bg-[oklch(95%_0.05_296)]', text: 'text-[oklch(42%_0.16_296)]', ring: 'ring-[oklch(42%_0.16_296)]' }, // violet
-  { bg: 'bg-[oklch(40%_0.14_60)]',  soft: 'bg-[oklch(95%_0.05_60)]',  text: 'text-[oklch(40%_0.14_60)]',  ring: 'ring-[oklch(40%_0.14_60)]' },  // amber
-  { bg: 'bg-[oklch(42%_0.14_240)]', soft: 'bg-[oklch(95%_0.04_240)]', text: 'text-[oklch(42%_0.14_240)]', ring: 'ring-[oklch(42%_0.14_240)]' }, // blue
-  { bg: 'bg-[oklch(38%_0.02_260)]', soft: 'bg-[oklch(94%_0.01_260)]', text: 'text-[oklch(38%_0.02_260)]', ring: 'ring-[oklch(38%_0.02_260)]' },  // neutral slate
-  { bg: 'bg-[oklch(38%_0.11_178)]', soft: 'bg-[oklch(95%_0.05_178)]', text: 'text-[oklch(38%_0.11_178)]', ring: 'ring-[oklch(38%_0.11_178)]' }, // teal
-  { bg: 'bg-[oklch(44%_0.17_322)]', soft: 'bg-[oklch(95%_0.05_322)]', text: 'text-[oklch(44%_0.17_322)]', ring: 'ring-[oklch(44%_0.17_322)]' }, // magenta
-  { bg: 'bg-[oklch(38%_0.13_100)]', soft: 'bg-[oklch(95%_0.05_100)]', text: 'text-[oklch(38%_0.13_100)]', ring: 'ring-[oklch(38%_0.13_100)]' }, // olive
-  { bg: 'bg-[oklch(42%_0.15_268)]', soft: 'bg-[oklch(95%_0.05_268)]', text: 'text-[oklch(42%_0.15_268)]', ring: 'ring-[oklch(42%_0.15_268)]' }, // indigo
+  { bg: 'bg-[oklch(60%_0.19_25)]',  soft: 'bg-[oklch(95%_0.05_25)]',  text: 'text-[oklch(42%_0.16_25)]',  ring: 'ring-[oklch(60%_0.19_25)]' },  // coral
+  { bg: 'bg-[oklch(58%_0.14_208)]', soft: 'bg-[oklch(95%_0.04_208)]', text: 'text-[oklch(40%_0.11_208)]', ring: 'ring-[oklch(58%_0.14_208)]' }, // cyan-blue
+  { bg: 'bg-[oklch(62%_0.19_350)]', soft: 'bg-[oklch(95%_0.05_350)]', text: 'text-[oklch(44%_0.16_350)]', ring: 'ring-[oklch(62%_0.19_350)]' }, // rose
+  { bg: 'bg-[oklch(56%_0.16_142)]', soft: 'bg-[oklch(95%_0.05_142)]', text: 'text-[oklch(38%_0.13_142)]', ring: 'ring-[oklch(56%_0.16_142)]' }, // green
+  { bg: 'bg-[oklch(58%_0.20_296)]', soft: 'bg-[oklch(95%_0.05_296)]', text: 'text-[oklch(42%_0.16_296)]', ring: 'ring-[oklch(58%_0.20_296)]' }, // violet
+  { bg: 'bg-[oklch(58%_0.16_60)]',  soft: 'bg-[oklch(95%_0.05_60)]',  text: 'text-[oklch(40%_0.14_60)]',  ring: 'ring-[oklch(58%_0.16_60)]' },  // amber
+  { bg: 'bg-[oklch(58%_0.17_240)]', soft: 'bg-[oklch(95%_0.04_240)]', text: 'text-[oklch(42%_0.14_240)]', ring: 'ring-[oklch(58%_0.17_240)]' }, // blue
+  { bg: 'bg-[oklch(52%_0.03_260)]', soft: 'bg-[oklch(94%_0.01_260)]', text: 'text-[oklch(38%_0.02_260)]', ring: 'ring-[oklch(52%_0.03_260)]' },  // neutral slate
+  { bg: 'bg-[oklch(56%_0.14_178)]', soft: 'bg-[oklch(95%_0.05_178)]', text: 'text-[oklch(38%_0.11_178)]', ring: 'ring-[oklch(56%_0.14_178)]' }, // teal
+  { bg: 'bg-[oklch(60%_0.19_322)]', soft: 'bg-[oklch(95%_0.05_322)]', text: 'text-[oklch(44%_0.17_322)]', ring: 'ring-[oklch(60%_0.19_322)]' }, // magenta
+  { bg: 'bg-[oklch(56%_0.14_100)]', soft: 'bg-[oklch(95%_0.05_100)]', text: 'text-[oklch(38%_0.13_100)]', ring: 'ring-[oklch(56%_0.14_100)]' }, // olive
+  { bg: 'bg-[oklch(58%_0.18_268)]', soft: 'bg-[oklch(95%_0.05_268)]', text: 'text-[oklch(42%_0.15_268)]', ring: 'ring-[oklch(58%_0.18_268)]' }, // indigo
 ];
 const getDoctorColor = (idx) => DOCTOR_PALETTE[idx % DOCTOR_PALETTE.length];
 
@@ -1517,7 +1524,7 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
           return (
             <div
               key={date}
-              className={`relative rounded-lg border p-1.5 min-h-[76px] min-w-0 flex flex-col gap-1 ${type === 'holiday' ? 'bg-rose-100 border-rose-200' : 'bg-white border-slate-200'} ${manuallyFlagged ? 'border-l-4 border-l-amber-400' : ''} ${isMine ? `ring-2 ring-offset-1 ${color.ring}` : ''} ${editable ? 'cursor-pointer hover:border-teal-300' : ''}`}
+              className={`relative rounded-lg border p-1.5 min-h-[76px] min-w-0 flex flex-col gap-1 ${type === 'holiday' ? 'bg-white border-2 border-rose-300' : 'bg-white border-slate-200'} ${manuallyFlagged ? 'border-l-4 border-l-amber-400' : ''} ${editable ? 'cursor-pointer hover:border-teal-300' : ''}`}
               onClick={() => editable && setEditingDate(date)}
               title={titleParts.join(' · ')}
             >
@@ -1571,7 +1578,7 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                 // ratio math html2canvas was getting wrong.
                 <div className="flex flex-col gap-0.5 min-w-0">
                   <span
-                    className={`block w-full text-center leading-[18px] sm:leading-[28px] font-body font-bold rounded-md px-1 py-3 whitespace-nowrap text-[10px] sm:text-[16px] ${color.soft} ${color.text}`}
+                    className={`block w-full text-center leading-[18px] sm:leading-[28px] font-body font-bold rounded-md px-1 py-3 whitespace-nowrap text-[10px] sm:text-[16px] ${color.soft} ${color.text} ${isMine ? `ring-2 ring-offset-1 ${color.ring}` : ''}`}
                   >{doc.name}</span>
                   {traded && (
                     <span className="block w-full text-center leading-[12px] sm:leading-[17px] font-body text-slate-400 line-through whitespace-nowrap px-1 text-[7px] sm:text-[10px]">{getDoctor(origId)?.name || '-'}</span>
