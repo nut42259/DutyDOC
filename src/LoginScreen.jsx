@@ -43,7 +43,7 @@ export default function LoginScreen({ doctors, onLogin }) {
             </div>
             <div>
               <p className="font-display font-semibold text-teal-900 text-lg leading-tight">DutyDoc</p>
-              <p className="text-[10.5px] text-slate-400">กุมารเวชกรรม รพ.บ้านแพ้ว</p>
+              <p className="text-[10.5px] text-slate-400">กุมารเวชกรรม รพ.กลาง</p>
             </div>
           </div>
           <div>

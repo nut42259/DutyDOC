@@ -67,26 +67,35 @@ const DUTY_ROSTER_HEAD_TITLE = 'หัวหน้ากลุ่มงานก
 // the wheel size) that guarantees any run of consecutive array indices
 // gets hues ~150deg apart instead of ~30deg apart, so adjacent doctors
 // in the roster never land in the same color family.
-// `bg`/`ring` are deliberately a BRIGHTER, more saturated tier than `text`
-// (~56-62% lightness vs. ~38-44%) — they're what a tiny legend dot or a
-// selection ring actually is, a small solid daub of color, and at the
-// darker `text` lightness (chosen for legibility as text on the pale
-// `soft` background, not for looking vivid on its own) a small dot reads
-// as dull/muted rather than colorful. `soft`+`text` stay at the darker,
-// pale-background-legible pairing the calendar name pill needs.
+// Hex, not oklch(): "Save to JPG" rasterizes the calendar through
+// html2canvas, which parses computed color values with its own minimal
+// CSS color grammar — rgb/rgba/hex only, no oklch()/lab()/color(). A
+// Tailwind arbitrary class like bg-[oklch(...)] compiles straight
+// through to a literal `oklch(...)` in the stylesheet, which html2canvas
+// can't parse — it threw partway through the capture and "Save to JPG"
+// failed outright. Every value below is the same color, precomputed to
+// its sRGB hex equivalent so html2canvas reads it like any other color.
+//
+// `bg`/`ring` are deliberately a BRIGHTER, more saturated tier than
+// `text` (~56-62% lightness vs. ~38-44%) — they're what a tiny legend
+// dot or a selection ring actually is, a small solid daub of color, and
+// at the darker `text` lightness (chosen for legibility as text on the
+// pale `soft` background, not for looking vivid on its own) a small dot
+// reads as dull/muted rather than colorful. `soft`+`text` stay at the
+// darker, pale-background-legible pairing the calendar name pill needs.
 const DOCTOR_PALETTE = [
-  { bg: 'bg-[oklch(60%_0.19_25)]',  soft: 'bg-[oklch(95%_0.05_25)]',  text: 'text-[oklch(42%_0.16_25)]',  ring: 'ring-[oklch(60%_0.19_25)]' },  // coral
-  { bg: 'bg-[oklch(58%_0.14_208)]', soft: 'bg-[oklch(95%_0.04_208)]', text: 'text-[oklch(40%_0.11_208)]', ring: 'ring-[oklch(58%_0.14_208)]' }, // cyan-blue
-  { bg: 'bg-[oklch(62%_0.19_350)]', soft: 'bg-[oklch(95%_0.05_350)]', text: 'text-[oklch(44%_0.16_350)]', ring: 'ring-[oklch(62%_0.19_350)]' }, // rose
-  { bg: 'bg-[oklch(56%_0.16_142)]', soft: 'bg-[oklch(95%_0.05_142)]', text: 'text-[oklch(38%_0.13_142)]', ring: 'ring-[oklch(56%_0.16_142)]' }, // green
-  { bg: 'bg-[oklch(58%_0.20_296)]', soft: 'bg-[oklch(95%_0.05_296)]', text: 'text-[oklch(42%_0.16_296)]', ring: 'ring-[oklch(58%_0.20_296)]' }, // violet
-  { bg: 'bg-[oklch(58%_0.16_60)]',  soft: 'bg-[oklch(95%_0.05_60)]',  text: 'text-[oklch(40%_0.14_60)]',  ring: 'ring-[oklch(58%_0.16_60)]' },  // amber
-  { bg: 'bg-[oklch(58%_0.17_240)]', soft: 'bg-[oklch(95%_0.04_240)]', text: 'text-[oklch(42%_0.14_240)]', ring: 'ring-[oklch(58%_0.17_240)]' }, // blue
-  { bg: 'bg-[oklch(52%_0.03_260)]', soft: 'bg-[oklch(94%_0.01_260)]', text: 'text-[oklch(38%_0.02_260)]', ring: 'ring-[oklch(52%_0.03_260)]' },  // neutral slate
-  { bg: 'bg-[oklch(56%_0.14_178)]', soft: 'bg-[oklch(95%_0.05_178)]', text: 'text-[oklch(38%_0.11_178)]', ring: 'ring-[oklch(56%_0.14_178)]' }, // teal
-  { bg: 'bg-[oklch(60%_0.19_322)]', soft: 'bg-[oklch(95%_0.05_322)]', text: 'text-[oklch(44%_0.17_322)]', ring: 'ring-[oklch(60%_0.19_322)]' }, // magenta
-  { bg: 'bg-[oklch(56%_0.14_100)]', soft: 'bg-[oklch(95%_0.05_100)]', text: 'text-[oklch(38%_0.13_100)]', ring: 'ring-[oklch(56%_0.14_100)]' }, // olive
-  { bg: 'bg-[oklch(58%_0.18_268)]', soft: 'bg-[oklch(95%_0.05_268)]', text: 'text-[oklch(42%_0.15_268)]', ring: 'ring-[oklch(58%_0.18_268)]' }, // indigo
+  { bg: 'bg-[#db4241]', soft: 'bg-[#ffe2de]', text: 'text-[#90101a]', ring: 'ring-[#db4241]' }, // coral
+  { bg: 'bg-[#008fa5]', soft: 'bg-[#d1f7fd]', text: 'text-[#005666]', ring: 'ring-[#008fa5]' }, // cyan-blue
+  { bg: 'bg-[#d44996]', soft: 'bg-[#ffe1f3]', text: 'text-[#8d1c5f]', ring: 'ring-[#d44996]' }, // rose
+  { bg: 'bg-[#2f8a27]', soft: 'bg-[#dcf8d9]', text: 'text-[#025200]', ring: 'ring-[#2f8a27]' }, // green
+  { bg: 'bg-[#8857e0]', soft: 'bg-[#f1e8ff]', text: 'text-[#583198]', ring: 'ring-[#8857e0]' }, // violet
+  { bg: 'bg-[#bc5d00]', soft: 'bg-[#ffe7ce]', text: 'text-[#7a2c00]', ring: 'ring-[#bc5d00]' }, // amber
+  { bg: 'bg-[#0083d3]', soft: 'bg-[#d7f3ff]', text: 'text-[#005290]', ring: 'ring-[#0083d3]' }, // blue
+  { bg: 'bg-[#5f6a7b]', soft: 'bg-[#e7ebf2]', text: 'text-[#3c434d]', ring: 'ring-[#5f6a7b]' }, // neutral slate
+  { bg: 'bg-[#008e74]', soft: 'bg-[#ccfaee]', text: 'text-[#005442]', ring: 'ring-[#008e74]' }, // teal
+  { bg: 'bg-[#b250c2]', soft: 'bg-[#ffe4ff]', text: 'text-[#7b2588]', ring: 'ring-[#b250c2]' }, // magenta
+  { bg: 'bg-[#887400]', soft: 'bg-[#f6f0ca]', text: 'text-[#534100]', ring: 'ring-[#887400]' }, // olive
+  { bg: 'bg-[#4d6fe3]', soft: 'bg-[#e0eeff]', text: 'text-[#2b439d]', ring: 'ring-[#4d6fe3]' }, // indigo
 ];
 const getDoctorColor = (idx) => DOCTOR_PALETTE[idx % DOCTOR_PALETTE.length];
 
