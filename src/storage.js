@@ -113,7 +113,7 @@ export async function deleteDoctor(id) {
 
 // ---------- queue state (master schedule generator) ----------
 
-const DEFAULT_QUEUE_STATE = {
+export const DEFAULT_QUEUE_STATE = {
   // Pointers = index of NEXT person to assign in each loop
   weekday: 0,   // next in WDQ (12-person loop), initial: after ณัฐพล → อารีรัตน์
   h12: 0,       // next in H12Q (15-slot loop), initial: after ขนิษฐา2 → พสิษฐา

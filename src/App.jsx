@@ -9,10 +9,11 @@ import {
   getMarketplace, setMarketplace,
   getNotifications, addNotification as dbAddNotification,
   getDoctors, addDoctor, updateDoctor, deleteDoctor,
-  getQueueState, setQueueState, getLatestQuotaMonth,
+  getQueueState, setQueueState, getLatestQuotaMonth, DEFAULT_QUEUE_STATE,
 } from './storage';
+import { classifyMonthDates, deriveQueueStateBefore } from './queueHistory.js';
 import LoginScreen from './LoginScreen';
-import MasterScheduleGenerator, { detectGroups, ltFor, resolveQueue, generateSchedule, buildDefaultAvail, DEFAULT_WDQ_NAMES, DEFAULT_H12Q_NAMES, DEFAULT_H3Q_NAMES } from './MasterScheduleGenerator';
+import MasterScheduleGenerator, { resolveQueue, generateSchedule, buildDefaultAvail, DEFAULT_WDQ_NAMES, DEFAULT_H12Q_NAMES, DEFAULT_H3Q_NAMES } from './MasterScheduleGenerator';
 
 /* ---------------------------------- constants ---------------------------------- */
 
@@ -1107,24 +1108,19 @@ function resolveChain(key, names) {
   return resolved;
 }
 
+// Resolved id arrays for the three queue orders (custom order from the saved
+// queue state if one was set, otherwise the defaults).
+function buildQueueArrays(qs, doctors) {
+  return {
+    WDQ: resolveQueue(qs.WDQ ?? DEFAULT_WDQ_NAMES, doctors),
+    H12Q: resolveQueue(qs.H12Q ?? DEFAULT_H12Q_NAMES, doctors),
+    H3Q: resolveQueue(qs.H3Q ?? DEFAULT_H3Q_NAMES, doctors),
+  };
+}
+
 // Merges the static rotation reference (for recheck) with this month's
 // actual start/end doctor per loop (previously a separate admin-only
 // "สรุปคิวเดือนนี้" block) into one panel, visible to admin and doctors alike.
-// Classifies every date in (y, m) into weekday/h12/h3/h4/h5, same logic used
-// both for "this month" and for each historical month scanned below.
-function classifyMonthDates(y, m, isHolidayDate) {
-  const groups = detectGroups(y, m, isHolidayDate);
-  const groupDateSet = new Set(groups.flatMap(g => g.dates));
-  const datesByType = { weekday: [], h12: [], h3: [], h4: [], h5: [] };
-  const total = daysInMonth(y, m);
-  for (let d = 1; d <= total; d++) {
-    const date = isoDate(y, m, d);
-    if (!groupDateSet.has(date)) datesByType.weekday.push(date);
-  }
-  groups.forEach(g => { datesByType[ltFor(g.trueLength)].push(...g.dates); });
-  return datesByType;
-}
-
 function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }) {
   const holidaySetAll = new Set(holidays);
   // Answers for ANY date, not just this month's — needed so a holiday
@@ -1267,11 +1263,18 @@ function QueueRunOrderSummary({ year, month, doctors, masterOriginal, holidays }
       }
 
       if (remaining.size > 0 && !cancelled) {
-        const qs = await getQueueState();
+        // Simulation starts at the frontier month (y, m) — seed it from
+        // where the queue stood per the REAL months before that, not the
+        // shared live pointers, which are wherever the last generation
+        // (possibly of a month since cleared and redone) left them.
+        const live = await getQueueState();
         if (cancelled) return;
-        const WDQ = resolveQueue(qs.WDQ ?? DEFAULT_WDQ_NAMES, doctors);
-        const H12Q = resolveQueue(qs.H12Q ?? DEFAULT_H12Q_NAMES, doctors);
-        const H3Q = resolveQueue(qs.H3Q ?? DEFAULT_H3Q_NAMES, doctors);
+        const { WDQ, H12Q, H3Q } = buildQueueArrays(live, doctors);
+        const { state: qs } = await deriveQueueStateBefore({
+          year: y, month: m, getMonthData, liveState: live, defaultState: DEFAULT_QUEUE_STATE, isHolidayDate: isHoliday,
+          queues: { weekday: WDQ, h12: H12Q, h3: H3Q, h4: H3Q, h5: H3Q },
+        });
+        if (cancelled) return;
         let qp = { weekday: qs.weekday, h12: qs.h12, h3: qs.h3, h4: qs.h4, h5: qs.h5 };
         let debt = JSON.parse(JSON.stringify(qs.debt || {}));
         for (let i = 0; i < 24 && remaining.size > 0 && !cancelled; i++) {
@@ -1666,6 +1669,8 @@ export default function App() {
   // very month) left the pointers, not "right before this month ran".
   const [monthQueueSnapshot, setMonthQueueSnapshot] = useState(null);
   const [showMasterGen, setShowMasterGen] = useState(false);
+  const [genQueueState, setGenQueueState] = useState(null);
+  const [openingMasterGen, setOpeningMasterGen] = useState(false);
   const [showBatchGen, setShowBatchGen] = useState(false);
   const [batchGenerating, setBatchGenerating] = useState(false);
   // Admin can pick a different doctor to highlight/recheck in the current &
@@ -2230,6 +2235,36 @@ export default function App() {
     ));
   };
 
+  // The shared live queue pointers are one cumulative value across every
+  // month, so they only mean "the month before this one" if months were
+  // generated strictly once, in order, never cleared or redone — and every
+  // time that stopped being true (clear + regenerate, a month generated
+  // before snapshots existed) the summary silently pointed at the wrong
+  // month. So the starting point for generating a month is rebuilt from the
+  // real saved quota of the months before it instead (queueHistory.js). Debt
+  // is the one thing history can't recover: use this month's own pre-
+  // generation snapshot if it has one, else whatever the live state holds.
+  const openMasterGen = async () => {
+    setOpeningMasterGen(true);
+    try {
+      const live = await getQueueState();
+      const holidaySetAll = new Set(holidays);
+      const { WDQ, H12Q, H3Q } = buildQueueArrays(live, doctors);
+      const { state } = await deriveQueueStateBefore({
+        year, month, getMonthData, liveState: live, defaultState: DEFAULT_QUEUE_STATE,
+        isHolidayDate: (date) => dayType(date, holidaySetAll) === 'holiday',
+        queues: { weekday: WDQ, h12: H12Q, h3: H3Q, h4: H3Q, h5: H3Q },
+        debt: monthQueueSnapshot ? monthQueueSnapshot.debt : undefined,
+      });
+      setGenQueueState(state);
+      setShowMasterGen(true);
+    } catch (e) {
+      console.error('openMasterGen failed', e);
+      showToast('เปิดหน้าจัดโควต้าเวรไม่สำเร็จ ลองใหม่อีกครั้ง');
+    }
+    setOpeningMasterGen(false);
+  };
+
   const handleMasterGenConfirm = async (schedule, newQueueState) => {
     // schedule = { [isoDate]: doctorId }
     // Write it into masterSchedule and masterOriginal (treated as a fresh admin-set baseline)
@@ -2241,17 +2276,12 @@ export default function App() {
     setCurrentSchedule({});
     setCurrentScheduleGenerated(false);
     setScheduleStale(false);
-    // Snapshot the GLOBAL queue state exactly as it was right before THIS
-    // month ever started generating — onto this month's own record. The
-    // queue pointers are shared/cumulative across all months, so both
-    // clearing this month later (resetMasterSchedule) AND simply reopening
-    // "จัดโควต้าเวร" to regenerate it again (see monthQueueSnapshot use
-    // below) need this to resume from the prior month instead of wherever
-    // this month's own last run advanced the pointers to. Prefer the
-    // EXISTING snapshot if this month already has one (i.e. this isn't the
-    // first generation) so re-generating repeatedly never drifts the
-    // remembered "before" point forward.
-    const beforeGen = monthQueueSnapshot ?? queueState;
+    // Record, on this month's own record, the queue state this generation
+    // actually started from (the one derived from the prior months' real
+    // quota in openMasterGen). Clearing the month (resetMasterSchedule) uses
+    // it to rewind the live pointers, and its debt is what re-opening this
+    // month starts from.
+    const beforeGen = genQueueState ?? monthQueueSnapshot ?? queueState;
     await saveMonth({ masterSchedule: nextMaster, masterOriginal: nextOriginal, scheduleOverrides: {}, currentSchedule: {}, currentScheduleGenerated: false, scheduleStale: false, queueStateBeforeGen: beforeGen });
     setMonthQueueSnapshot(beforeGen);
     // Persist new queue state. newQueueState.debt already reflects only what
@@ -3173,8 +3203,8 @@ export default function App() {
               <MonthNav year={year} month={month} onShift={shiftMonth} />
               {role === 'admin' && (
                 <div className="flex items-center gap-2">
-                  <button onClick={() => setShowMasterGen(true)}
-                    className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-3 py-1.5 rounded-lg transition-colors">
+                  <button onClick={openMasterGen} disabled={openingMasterGen}
+                    className="flex items-center gap-1.5 disabled:opacity-60 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-3 py-1.5 rounded-lg transition-colors">
                     <CalendarCheck size={14} /> จัดโควต้าเวร
                   </button>
                   {hasMasterData && (
@@ -3476,18 +3506,15 @@ export default function App() {
         onConfirm={() => { setConfirmState(null); resetMasterSchedule(); }}
       />
 
-      {showMasterGen && queueState && (
+      {showMasterGen && genQueueState && (
         <MasterScheduleGenerator
           year={year} month={month}
           doctors={doctors}
           activeDoctorIds={activeDoctorIds}
           holidays={holidays}
-          // Prefer THIS month's own "before it was first generated" snapshot
-          // over the raw global queueState — otherwise re-opening this to
-          // regenerate an already-generated month would start from wherever
-          // that generation itself left the pointers (i.e. the following
-          // month's territory) instead of resuming from the prior month.
-          queueState={monthQueueSnapshot || queueState}
+          // Where each queue stood per the REAL saved months before this
+          // one (see openMasterGen), never the shared live pointers.
+          queueState={genQueueState}
           onConfirm={handleMasterGenConfirm}
           onClose={() => setShowMasterGen(false)}
         />

@@ -17,6 +17,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { X, ChevronLeft, ChevronRight, Info, Check } from 'lucide-react';
 import { isoDate, dayType, daysInMonth, formatDisplayDate } from './dateUtils';
+import { ltFor, detectGroups } from './queueHistory.js';
 
 // ─── Queue definitions ────────────────────────────────────────────────────────
 // Default loop order (by doctor NAME, resolved to id at runtime)
@@ -35,46 +36,10 @@ const LOOP_META = {
   h5:      { label: 'วันหยุด 5+ วัน',  bg: '#ede9fe', tx: '#4c1d95' },
 };
 
-export function ltFor(n) { return n <= 2 ? 'h12' : n === 3 ? 'h3' : n === 4 ? 'h4' : 'h5'; }
-
-// Native Date rolls day-of-month over/under into adjacent months correctly
-// (e.g. new Date(2026, 11, 32) → 1 Jan 2027), so this works for any offset.
-function offsetDate(year, month, dayOffset) {
-  const d = new Date(year, month, dayOffset);
-  return isoDate(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
-// Scans a window padded well before day 1 and after the last day (not just
-// [1, n]) so a holiday streak that crosses a month boundary — e.g. 31 Dec –
-// 3 Jan — is recognized as ONE continuous group instead of being split into
-// a 1-day group in December and a separate 3-day group in January. Only the
-// dates that actually fall in [year, month] are returned per group (that's
-// all this generation run assigns), but `trueLength` carries the FULL
-// cross-boundary streak length so ltFor() classifies it correctly (as a
-// 4-day group here, not 1+3).
-//
-// `isHoliday(date)` must be able to answer for ANY date, not just this
-// month's — callers build it from a combination of live-edited state (for
-// the month actually being configured) and saved config (for neighboring
-// months).
-export function detectGroups(year, month, isHoliday) {
-  const n = daysInMonth(year, month);
-  const PAD = 6; // comfortably longer than any realistic holiday streak
-  const rawGroups = [];
-  let cur = [];
-  for (let d = 1 - PAD; d <= n + PAD; d++) {
-    const date = offsetDate(year, month, d);
-    if (isHoliday(date)) cur.push(date);
-    else if (cur.length) { rawGroups.push(cur); cur = []; }
-  }
-  if (cur.length) rawGroups.push(cur);
-
-  const monthStart = isoDate(year, month, 1);
-  const monthEnd = isoDate(year, month, n);
-  return rawGroups
-    .map(g => ({ dates: g.filter(d => d >= monthStart && d <= monthEnd), trueLength: g.length }))
-    .filter(g => g.dates.length > 0);
-}
+// ltFor / detectGroups live in queueHistory.js (plain JS) so the queue
+// derivation can share them and be tested outside React; re-exported here so
+// existing imports keep working.
+export { ltFor, detectGroups };
 
 // Default per-doctor {active, start, end} availability for a month's
 // generation — active_docs get the whole month, EXCEPT ชุติมา, who is
