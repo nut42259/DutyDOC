@@ -84,19 +84,23 @@ const DUTY_ROSTER_HEAD_TITLE = 'หัวหน้ากลุ่มงานก
 // pale `soft` background, not for looking vivid on its own) a small dot
 // reads as dull/muted rather than colorful. `soft`+`text` stay at the
 // darker, pale-background-legible pairing the calendar name pill needs.
+// `edge` is a mid-tone outline for the name pill, used only on holiday cells:
+// the pill's pale `soft` fill is nearly the same lightness as the faint red
+// holiday background, so without an outline the coral/rose/magenta pills
+// dissolve into it.
 const DOCTOR_PALETTE = [
-  { bg: 'bg-[#db4241]', soft: 'bg-[#ffe2de]', text: 'text-[#90101a]', ring: 'ring-[#db4241]' }, // coral
-  { bg: 'bg-[#008fa5]', soft: 'bg-[#d1f7fd]', text: 'text-[#005666]', ring: 'ring-[#008fa5]' }, // cyan-blue
-  { bg: 'bg-[#d44996]', soft: 'bg-[#ffe1f3]', text: 'text-[#8d1c5f]', ring: 'ring-[#d44996]' }, // rose
-  { bg: 'bg-[#2f8a27]', soft: 'bg-[#dcf8d9]', text: 'text-[#025200]', ring: 'ring-[#2f8a27]' }, // green
-  { bg: 'bg-[#8857e0]', soft: 'bg-[#f1e8ff]', text: 'text-[#583198]', ring: 'ring-[#8857e0]' }, // violet
-  { bg: 'bg-[#bc5d00]', soft: 'bg-[#ffe7ce]', text: 'text-[#7a2c00]', ring: 'ring-[#bc5d00]' }, // amber
-  { bg: 'bg-[#0083d3]', soft: 'bg-[#d7f3ff]', text: 'text-[#005290]', ring: 'ring-[#0083d3]' }, // blue
-  { bg: 'bg-[#5f6a7b]', soft: 'bg-[#e7ebf2]', text: 'text-[#3c434d]', ring: 'ring-[#5f6a7b]' }, // neutral slate
-  { bg: 'bg-[#008e74]', soft: 'bg-[#ccfaee]', text: 'text-[#005442]', ring: 'ring-[#008e74]' }, // teal
-  { bg: 'bg-[#b250c2]', soft: 'bg-[#ffe4ff]', text: 'text-[#7b2588]', ring: 'ring-[#b250c2]' }, // magenta
-  { bg: 'bg-[#887400]', soft: 'bg-[#f6f0ca]', text: 'text-[#534100]', ring: 'ring-[#887400]' }, // olive
-  { bg: 'bg-[#4d6fe3]', soft: 'bg-[#e0eeff]', text: 'text-[#2b439d]', ring: 'ring-[#4d6fe3]' }, // indigo
+  { bg: 'bg-[#db4241]', soft: 'bg-[#ffe2de]', text: 'text-[#90101a]', ring: 'ring-[#db4241]', edge: 'border-[#f2a7a1]' }, // coral
+  { bg: 'bg-[#008fa5]', soft: 'bg-[#d1f7fd]', text: 'text-[#005666]', ring: 'ring-[#008fa5]', edge: 'border-[#87cbd5]' }, // cyan-blue
+  { bg: 'bg-[#d44996]', soft: 'bg-[#ffe1f3]', text: 'text-[#8d1c5f]', ring: 'ring-[#d44996]', edge: 'border-[#eba6c6]' }, // rose
+  { bg: 'bg-[#2f8a27]', soft: 'bg-[#dcf8d9]', text: 'text-[#025200]', ring: 'ring-[#2f8a27]', edge: 'border-[#9dcd97]' }, // green
+  { bg: 'bg-[#8857e0]', soft: 'bg-[#f1e8ff]', text: 'text-[#583198]', ring: 'ring-[#8857e0]', edge: 'border-[#c2b2f2]' }, // violet
+  { bg: 'bg-[#bc5d00]', soft: 'bg-[#ffe7ce]', text: 'text-[#7a2c00]', ring: 'ring-[#bc5d00]', edge: 'border-[#e9b082]' }, // amber
+  { bg: 'bg-[#0083d3]', soft: 'bg-[#d7f3ff]', text: 'text-[#005290]', ring: 'ring-[#0083d3]', edge: 'border-[#8ec5ec]' }, // blue
+  { bg: 'bg-[#5f6a7b]', soft: 'bg-[#e7ebf2]', text: 'text-[#3c434d]', ring: 'ring-[#5f6a7b]', edge: 'border-[#b8bec8]' }, // neutral slate
+  { bg: 'bg-[#008e74]', soft: 'bg-[#ccfaee]', text: 'text-[#005442]', ring: 'ring-[#008e74]', edge: 'border-[#8ccdbe]' }, // teal
+  { bg: 'bg-[#b250c2]', soft: 'bg-[#ffe4ff]', text: 'text-[#7b2588]', ring: 'ring-[#b250c2]', edge: 'border-[#d9abe0]' }, // magenta
+  { bg: 'bg-[#887400]', soft: 'bg-[#f6f0ca]', text: 'text-[#534100]', ring: 'ring-[#887400]', edge: 'border-[#c9bf83]' }, // olive
+  { bg: 'bg-[#4d6fe3]', soft: 'bg-[#e0eeff]', text: 'text-[#2b439d]', ring: 'ring-[#4d6fe3]', edge: 'border-[#a8bdf2]' }, // indigo
 ];
 const getDoctorColor = (idx) => DOCTOR_PALETTE[idx % DOCTOR_PALETTE.length];
 
@@ -1536,7 +1540,7 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
           return (
             <div
               key={date}
-              className={`relative rounded-lg border p-1.5 min-h-[76px] min-w-0 flex flex-col gap-1 ${type === 'holiday' ? 'bg-white border-2 border-rose-300' : 'bg-white border-slate-200'} ${manuallyFlagged ? 'border-l-4 border-l-amber-400' : ''} ${editable ? 'cursor-pointer hover:border-teal-300' : ''}`}
+              className={`relative rounded-lg border p-1.5 min-h-[76px] min-w-0 flex flex-col gap-1 ${type === 'holiday' ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-200'} ${manuallyFlagged ? 'border-l-4 border-l-amber-400' : ''} ${editable ? 'cursor-pointer hover:border-teal-300' : ''}`}
               onClick={() => editable && setEditingDate(date)}
               title={titleParts.join(' · ')}
             >
@@ -1590,7 +1594,7 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                 // ratio math html2canvas was getting wrong.
                 <div className="flex flex-col gap-0.5 min-w-0">
                   <span
-                    className={`block w-full text-center leading-[18px] sm:leading-[28px] font-body font-bold rounded-md px-1 py-3 whitespace-nowrap text-[10px] sm:text-[16px] ${color.soft} ${color.text} ${isMine ? `ring-2 ring-offset-1 ${color.ring}` : ''}`}
+                    className={`block w-full text-center leading-[18px] sm:leading-[28px] font-body font-bold rounded-md px-1 py-3 whitespace-nowrap text-[10px] sm:text-[16px] ${color.soft} ${color.text} ${type === 'holiday' ? `border ${color.edge}` : ''} ${isMine ? `ring-4 ring-offset-1 ${color.ring}` : ''}`}
                   >{doc.name}</span>
                   {traded && (
                     <span className="block w-full text-center leading-[12px] sm:leading-[17px] font-body text-slate-400 line-through whitespace-nowrap px-1 text-[7px] sm:text-[10px]">{getDoctor(origId)?.name || '-'}</span>
