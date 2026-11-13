@@ -84,10 +84,10 @@ const DUTY_ROSTER_HEAD_TITLE = 'หัวหน้ากลุ่มงานก
 // pale `soft` background, not for looking vivid on its own) a small dot
 // reads as dull/muted rather than colorful. `soft`+`text` stay at the
 // darker, pale-background-legible pairing the calendar name pill needs.
-// `edge` is a mid-tone outline for the name pill, used only on holiday cells:
-// the pill's pale `soft` fill is nearly the same lightness as the faint red
-// holiday background, so without an outline the coral/rose/magenta pills
-// dissolve into it.
+// `edge` is a mid-tone outline for the name pill. The pill's pale `soft` fill
+// is nearly the same lightness as the faint red holiday background, so
+// without an outline the coral/rose/magenta pills dissolve into it; it's
+// applied to every cell so holiday and weekday pills look the same.
 const DOCTOR_PALETTE = [
   { bg: 'bg-[#db4241]', soft: 'bg-[#ffe2de]', text: 'text-[#90101a]', ring: 'ring-[#db4241]', edge: 'border-[#f2a7a1]' }, // coral
   { bg: 'bg-[#008fa5]', soft: 'bg-[#d1f7fd]', text: 'text-[#005666]', ring: 'ring-[#008fa5]', edge: 'border-[#87cbd5]' }, // cyan-blue
@@ -1594,7 +1594,7 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                 // ratio math html2canvas was getting wrong.
                 <div className="flex flex-col gap-0.5 min-w-0">
                   <span
-                    className={`block w-full text-center leading-[18px] sm:leading-[28px] font-body font-bold rounded-md px-1 py-3 whitespace-nowrap text-[10px] sm:text-[16px] ${color.soft} ${color.text} ${type === 'holiday' ? `border ${color.edge}` : ''} ${isMine ? `ring-4 ring-offset-1 ${color.ring}` : ''}`}
+                    className={`block w-full text-center leading-[18px] sm:leading-[28px] font-body font-bold rounded-md px-1 py-3 whitespace-nowrap text-[10px] sm:text-[16px] ${color.soft} ${color.text} border ${color.edge} ${isMine ? `ring-4 ring-offset-1 ${color.ring}` : ''}`}
                   >{doc.name}</span>
                   {traded && (
                     <span className="block w-full text-center leading-[12px] sm:leading-[17px] font-body text-slate-400 line-through whitespace-nowrap px-1 text-[7px] sm:text-[10px]">{getDoctor(origId)?.name || '-'}</span>
