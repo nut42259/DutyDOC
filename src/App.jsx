@@ -1497,7 +1497,7 @@ function OverviewTab({ year, month, doctorsWithShifts, hasMasterData, unavailabi
 
 /* ---------------------------------- calendar grid (shared) ---------------------------------- */
 
-function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctors, selectableDoctors, holidaySet, unavailability, marketplace, compareTo, highlightDoctorId, originalData, violationDates, hideUnavailableCount = false, manualEditFlagDates = null }) {
+function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctors, selectableDoctors, holidaySet, unavailability, marketplace, compareTo, highlightDoctorId, originalData, violationDates, hideUnavailableCount = false, manualEditFlagDates = null, compact = false }) {
   const [editingDate, setEditingDate] = useState(null);
   const getDoctor = (id) => allDoctors.find(d => d.id === id);
   const doctorIndex = (id) => allDoctors.findIndex(d => d.id === id);
@@ -1507,12 +1507,25 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
   for (let i = 0; i < leadBlanks; i++) cells.push(null);
   for (let d = 1; d <= total; d++) cells.push(isoDate(year, month, d));
 
+  // compact = the saved-image layout. That capture is laid out at a phone
+  // width (see saveCurrentScheduleImage), where each day cell is only ~55px
+  // wide: with the normal cell padding, pill padding and 10px+ bold text the
+  // room left for a name is ~26px, and the longer names (ธัญลักษณ์ is ~44px at
+  // 11px) spill out of their pill. So the saved image trims the padding and
+  // gaps instead, giving the name ~49px, and pins the size explicitly rather
+  // than relying on a responsive breakpoint.
+  const gridGap = compact ? 'gap-[3px]' : 'gap-1';
+  const cellPad = compact ? 'p-[3px] min-h-[64px]' : 'p-1.5 min-h-[76px]';
+  const pillSize = compact
+    ? 'px-0 py-2.5 leading-[18px] text-[11px]'
+    : 'px-1 py-3 leading-[18px] sm:leading-[28px] text-[10px] sm:text-[16px]';
+
   return (
     <div>
-      <div className="grid grid-cols-7 gap-1 mb-1">
+      <div className={`grid grid-cols-7 ${gridGap} mb-1`}>
         {WEEKDAY_LABELS.map((w, i) => (<div key={w} className={`text-center text-xs font-body font-semibold py-1 ${i === 0 || i === 6 ? 'text-rose-500' : 'text-slate-400'}`}>{w}</div>))}
       </div>
-      <div className="grid grid-cols-7 gap-1">
+      <div className={`grid grid-cols-7 ${gridGap}`}>
         {cells.map((date, i) => {
           if (!date) return <div key={`b-${i}`} />;
           const docId = scheduleData[date] || null;
@@ -1540,7 +1553,7 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
           return (
             <div
               key={date}
-              className={`relative rounded-lg border p-1.5 min-h-[76px] min-w-0 flex flex-col gap-1 ${type === 'holiday' ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-200'} ${manuallyFlagged ? 'border-l-4 border-l-amber-400' : ''} ${editable ? 'cursor-pointer hover:border-teal-300' : ''}`}
+              className={`relative rounded-lg border ${cellPad} min-w-0 flex flex-col gap-1 ${type === 'holiday' ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-200'} ${manuallyFlagged ? 'border-l-4 border-l-amber-400' : ''} ${editable ? 'cursor-pointer hover:border-teal-300' : ''}`}
               onClick={() => editable && setEditingDate(date)}
               title={titleParts.join(' · ')}
             >
@@ -1594,7 +1607,7 @@ function CalendarGrid({ year, month, scheduleData, editable, onAssign, allDoctor
                 // ratio math html2canvas was getting wrong.
                 <div className="flex flex-col gap-0.5 min-w-0">
                   <span
-                    className={`block w-full text-center leading-[18px] sm:leading-[28px] font-body font-bold rounded-md px-1 py-3 whitespace-nowrap text-[10px] sm:text-[16px] ${color.soft} ${color.text} border ${color.edge} ${isMine ? `ring-4 ring-offset-1 ${color.ring}` : ''}`}
+                    className={`block w-full text-center font-body font-bold rounded-md whitespace-nowrap ${pillSize} ${color.soft} ${color.text} border ${color.edge} ${isMine ? `ring-4 ring-offset-1 ${color.ring}` : ''}`}
                   >{doc.name}</span>
                   {traded && (
                     <span className="block w-full text-center leading-[12px] sm:leading-[17px] font-body text-slate-400 line-through whitespace-nowrap px-1 text-[7px] sm:text-[10px]">{getDoctor(origId)?.name || '-'}</span>
@@ -1753,7 +1766,7 @@ export default function App() {
       // staying on one), which is what turns the capture from the usual
       // wide desktop layout into a portrait image that's already legible
       // at native size on a phone, with no artificial padding needed.
-      const MOBILE_CAPTURE_WIDTH = 420;
+      const MOBILE_CAPTURE_WIDTH = 512;
       const canvas = await html2canvas(el, {
         backgroundColor: '#ffffff', scale: 2,
         scrollX: -window.scrollX, scrollY: -window.scrollY,
@@ -3161,6 +3174,7 @@ export default function App() {
                     compareTo={currentSchedule} highlightDoctorId={highlightDoctorId}
                     violationDates={[...liveViolations]}
                     hideUnavailableCount={savingScheduleImage}
+                    compact={savingScheduleImage}
                     manualEditFlagDates={manualEditFlags ? new Set(manualEditFlags.dates) : null}
                   />
                   {savingScheduleImage && saveStamp && (
