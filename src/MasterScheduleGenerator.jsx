@@ -10,6 +10,7 @@
  *   activeDoctorIds    — ids of doctors active this month (null = all)
  *   holidays           — array of ISO date strings already marked as holidays in config
  *   queueState         — current {weekday,h12,h3,h4,h5,WDQ,H12Q,H3Q,debt} from Supabase
+ *   notes               — admin's memo notes (optional); the ones still open are shown at the top
  *   onConfirm(schedule, newQueueState) — called when admin confirms the preview
  *   onClose()          — called to dismiss the modal
  */
@@ -18,6 +19,7 @@ import { useState, useMemo, useCallback } from 'react';
 import { X, ChevronLeft, ChevronRight, Info, Check } from 'lucide-react';
 import { isoDate, dayType, daysInMonth, formatDisplayDate } from './dateUtils';
 import { ltFor, detectGroups } from './queueHistory.js';
+import { OpenNotesReminder } from './AdminNotes';
 
 // ─── Queue definitions ────────────────────────────────────────────────────────
 // Default loop order (by doctor NAME, resolved to id at runtime)
@@ -236,7 +238,7 @@ function CalPreview({ year, month, schedule, holidayDates, doctors, groupMap }) 
 
 // ─── Main component ──────────────────────────────────────────────────────────
 
-export default function MasterScheduleGenerator({ year, month, doctors, activeDoctorIds, holidays, queueState, onConfirm, onClose }) {
+export default function MasterScheduleGenerator({ year, month, doctors, activeDoctorIds, holidays, queueState, notes, onConfirm, onClose }) {
   const activeDocs = activeDoctorIds === null ? doctors : doctors.filter(d => activeDoctorIds.includes(d.id));
 
   // Resolve queue arrays (name → id)
@@ -392,6 +394,8 @@ export default function MasterScheduleGenerator({ year, month, doctors, activeDo
 
           {phase === 'config' && (
             <>
+              <OpenNotesReminder notes={notes} />
+
               {/* Calendar — mark national holidays */}
               <div>
                 <p className="text-xs font-medium text-slate-600 mb-1">คลิกวันธรรมดาเพื่อเพิ่ม/ลบวันหยุดนักขัตฤกษ์</p>

@@ -56,6 +56,23 @@ export async function setMarketplace(posts) {
   await supabase.from('config').upsert({ key: 'marketplace', value: posts }, { onConflict: 'key' });
 }
 
+// ---------- admin notes ----------
+// Free-form reminders the admin leaves for themselves for later scheduling
+// rounds: [{ id, text, createdAt, done, doneAt? }], newest first. One row in
+// config (key='admin_notes'), same as marketplace.
+
+export async function getAdminNotes() {
+  const { data } = await supabase.from('config').select('value').eq('key', 'admin_notes').maybeSingle();
+  return Array.isArray(data?.value) ? data.value : [];
+}
+
+// Returns false when the write fails (unlike most writers in this file) so
+// the UI can say so instead of showing a note that was never saved.
+export async function saveAdminNotes(notes) {
+  const { error } = await supabase.from('config').upsert({ key: 'admin_notes', value: notes }, { onConflict: 'key' });
+  return !error;
+}
+
 // ---------- notifications ----------
 
 export async function getNotifications() {

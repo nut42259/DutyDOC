@@ -10,7 +10,9 @@ import {
   getNotifications, addNotification as dbAddNotification,
   getDoctors, addDoctor, updateDoctor, deleteDoctor,
   getQueueState, setQueueState, getLatestQuotaMonth, DEFAULT_QUEUE_STATE,
+  getAdminNotes, saveAdminNotes,
 } from './storage';
+import AdminNotes from './AdminNotes';
 import { classifyMonthDates, deriveQueueStateBefore } from './queueHistory.js';
 import LoginScreen from './LoginScreen';
 import MasterScheduleGenerator, { resolveQueue, generateSchedule, buildDefaultAvail, DEFAULT_WDQ_NAMES, DEFAULT_H12Q_NAMES, DEFAULT_H3Q_NAMES } from './MasterScheduleGenerator';
@@ -1653,6 +1655,27 @@ export default function App() {
     });
   }, [currentUser]);
 
+  // Admin-only reminders (see AdminNotes). Loaded once per admin login; every
+  // change is a fresh-read-then-write so a second tab or device can't be
+  // overwritten with a stale list.
+  const [adminNotes, setAdminNotes] = useState(null);
+  useEffect(() => {
+    if (currentUser?.role !== 'admin') { setAdminNotes(null); return; }
+    getAdminNotes().then(setAdminNotes).catch(() => setAdminNotes([]));
+  }, [currentUser]);
+  const changeAdminNotes = async (mutate) => {
+    const next = mutate(await getAdminNotes());
+    if (!(await saveAdminNotes(next))) {
+      showToast('บันทึกโน้ตไม่สำเร็จ ลองอีกครั้ง');
+      return false;
+    }
+    setAdminNotes(next);
+    return true;
+  };
+  const addAdminNote = (text) => changeAdminNotes(list => [{ id: genId(), text, createdAt: new Date().toISOString(), done: false }, ...list]);
+  const toggleAdminNote = (id) => changeAdminNotes(list => list.map(n => n.id === id ? { ...n, done: !n.done, doneAt: n.done ? null : new Date().toISOString() } : n));
+  const deleteAdminNote = (id) => changeAdminNotes(list => list.filter(n => n.id !== id));
+
   const [doctors, setDoctors] = useState([]);
   const [holidays, setHolidays] = useState([]);
 
@@ -3236,6 +3259,10 @@ export default function App() {
                 </div>
               )}
             </div>
+
+            {role === 'admin' && (
+              <AdminNotes notes={adminNotes} onAdd={addAdminNote} onToggle={toggleAdminNote} onDelete={deleteAdminNote} />
+            )}
             <p className="text-xs text-slate-400 mb-3 flex items-center gap-1"><Info size={12} /> โควต้าเวรนี้มาจากการกด "จัดโควต้าเวร" เท่านั้น (ไม่รับการแก้ไขทีละวันหรือไฟล์ Excel อีกต่อไป เพื่อไม่ให้ค่าที่แสดงใน "วิธีการรันคิวเวร" คลาดเคลื่อนจากคิวจริง) — การขาย/แลกเวรที่สำเร็จแล้วจะถูกปรับเข้าที่นี่โดยอัตโนมัติเพื่ออัปเดตโควตาล่าสุด</p>
 
             {activeDoctors.length === 0 ? (
@@ -3533,6 +3560,7 @@ export default function App() {
           // Where each queue stood per the REAL saved months before this
           // one (see openMasterGen), never the shared live pointers.
           queueState={genQueueState}
+          notes={adminNotes}
           onConfirm={handleMasterGenConfirm}
           onClose={() => setShowMasterGen(false)}
         />
