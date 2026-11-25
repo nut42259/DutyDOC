@@ -1,28 +1,49 @@
 name: Keep Supabase alive
 
-# Free-tier Supabase projects auto-pause after about a week without
-# activity, which takes the app (and its login dropdown) down until
-# someone restores it. A tiny read once a day counts as activity.
+# Free-tier Supabase projects are paused after a week of too little "user
+# database activity" — which takes the app (and its login dropdown) down until
+# someone restores it. Supabase's docs say a few database requests a day are
+# enough; a single one-row read a day was NOT (the project still got a
+# pre-pause warning while this ran daily), so each run now does several
+# reads across the app's tables plus a small write, three times a day.
+# (GitHub starts scheduled runs late, sometimes by hours, hence the spread.)
 on:
   schedule:
-    - cron: '17 3 * * *'
+    - cron: '17 0,8,16 * * *'
   workflow_dispatch:
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Query the doctors table
+      - name: Generate database activity
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
-            echo "Missing SUPABASE_URL / SUPABASE_ANON_KEY repository secrets" >&2
-            exit 1
-          fi
-          curl --fail --silent --show-error --max-time 30 \
-            -H "apikey: $SUPABASE_ANON_KEY" \
-            -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
-            "$SUPABASE_URL/rest/v1/doctors?select=id&limit=1" > /dev/null
-          echo "Supabase responded OK"
+          fail() { echo "::error::$1"; exit 1; }
+          [ -n "$SUPABASE_URL" ] || fail "Secret SUPABASE_URL is empty or not set"
+          [ -n "$SUPABASE_ANON_KEY" ] || fail "Secret SUPABASE_ANON_KEY is empty or not set"
+
+          api() { # method path [json body]
+            local code
+            if [ -n "$3" ]; then
+              code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -X "$1" \
+                -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+                -H "Content-Type: application/json" -H "Prefer: resolution=merge-duplicates,return=minimal" \
+                --data "$3" "$SUPABASE_URL/rest/v1/$2") || fail "Request failed: $1 $2 (could not reach Supabase)"
+            else
+              code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -X "$1" \
+                -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+                "$SUPABASE_URL/rest/v1/$2") || fail "Request failed: $1 $2 (could not reach Supabase)"
+            fi
+            case "$code" in 2*) echo "ok $code  $1 $2" ;; *) fail "Supabase answered HTTP $code for $1 $2" ;; esac
+          }
+
+          api GET  "doctors?select=id,name&order=created_at"
+          api GET  "config?select=key"
+          api GET  "month_data?select=month_key&order=month_key.desc&limit=12"
+          api GET  "notifications?select=id&order=created_at.desc&limit=20"
+          api POST "config?on_conflict=key" "{\"key\":\"keepalive\",\"value\":{\"at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"run\":\"$GITHUB_RUN_ID\"}}"
+          api GET  "config?select=value&key=eq.keepalive"
+          echo "Supabase activity generated"
